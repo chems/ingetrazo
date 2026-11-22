@@ -139,7 +139,15 @@ import_dxf(path, units, create_faces) -> groups created, export_ifc(path), \
 quantities_csv(path), paint(target, material, faces), add_light / \
 list_lights / remove_light (Blender render lights, Render panel), \
 render(path, scene, engine, width, height, quality) -> waits for the PNG, \
-query_model(offset, limit) -> counts incl. groups, paged names."""
+query_model(offset, limit) -> counts incl. groups, paged names, \
+search_components(query, category, size_cm) + insert_component(id, \
+position, rotation) -> real-size library models (names in Spanish/English: \
+Cama/Bed, Silla/Chair, Lampara/Lamp, Radiador/Radiator…), import_model(path, \
+position, rotation, units) -> GLB/OBJ/DAE/SKP/STL/IGZ as one component.
+- Quality: replace placeholder boxes by library models; textures at real \
+tile size (sw/sh m); name materials and set their finish with paint \
+({"name": "Vidrio", "finish": "glass"}) — the render guesses finishes from \
+Spanish/English/Portuguese names only (a French «verre» renders matte)."""
 
 
 def reference(unit: str = "llamada") -> str:

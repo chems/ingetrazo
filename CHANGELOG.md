@@ -32,6 +32,22 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   spots du rendu Blender, stockées comme le fait le panneau Rendu (visibles
   dedans, enregistrées dans le document, annulables).
 
+- **Lot 2 — composants et modèles 3D** :
+  - `search_components(query, category, size_cm)` : la bibliothèque en
+    ligne d'IngeTrazo (≈ 1 500 modèles Sweet Home 3D, noms en espagnol et
+    en anglais, tailles en cm) et les composants fournis ;
+  - `insert_component(id | query, position, rotation, name, layer, ifc)` :
+    le modèle à sa taille réelle, debout, centre de sa base au point
+    demandé, en composant (les copies partagent la définition), une étape
+    d'annulation, licence et auteur renvoyés ;
+  - `import_model(path, position, rotation, units, anchor)` : GLB/glTF,
+    OBJ, DAE, SKP, STL ou IGZ en un seul composant, matériaux et calques
+    repris, une étape d'annulation ;
+  - `paint` accepte `"finish"` (matte, satin, gloss, metal, glass, water)
+    sur une matière nommée, et `{"name": …}` seul applique une matière du
+    document. La finition pilote le rendu Blender ; sans elle, IngeTrazo
+    la devine des noms espagnols, anglais ou portugais seulement.
+
 ### Corrigé
 
 - **Encodage** : le client MCP lit et écrit en UTF-8 quel que soit le code de
@@ -73,6 +89,9 @@ Rien de ceci n'est publié sur le dépôt d'origine.
 
 ### Tests
 
+- `tests/test_mcp_agent_components.py` (lot 2) : recherche, insertion à
+  taille réelle et partage de définition sur une bibliothèque publiée sur
+  disque, imports GLB/OBJ/IGZ, finitions jusque dans le GLB du rendu.
 - `tests/test_mcp_agent_tools.py` : un ou plusieurs tests par point
   (fichiers, rendu avec un faux Blender, DXF, peinture, lumières, UTF-8,
   personnage caché — test GL, ignoré sans contexte OpenGL —, query_model,

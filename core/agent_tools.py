@@ -220,6 +220,16 @@ def resolve_material(spec) -> dict:
             out["opacity"] = op
     if spec.get("name"):
         out["mat"] = norm(spec["name"])
+    if spec.get("finish") is not None:
+        from core.finish import FINISHES
+        fin = str(spec["finish"]).lower()
+        if fin not in FINISHES:
+            raise ValueError(f"finish is one of {FINISHES}")
+        if not out.get("mat"):
+            raise ValueError('a finish belongs to a NAMED material: give '
+                             '"name" too, e.g. {"color": [...], '
+                             '"name": "Verre clair", "finish": "glass"}')
+        out["_finish"] = fin
     return out
 
 
@@ -233,12 +243,16 @@ class PaintCommand(Command):
     :class:`core.materials.Material` to add to the document's registry."""
 
     def __init__(self, face_attrs=(), group=None, group_paint=None,
-                 set_group: bool = False, material=None) -> None:
+                 set_group: bool = False, material=None,
+                 finish=None) -> None:
         self.face_attrs = list(face_attrs)
         self.group = group
         self.group_paint = dict(group_paint) if group_paint else None
         self.set_group = set_group
         self.material = material
+        #: (name, finish) to set on a material already in the registry.
+        self.finish = finish
+        self._old_finish = None
         self._old_faces = None
         self._old_group = None
         self._added_mat = None
@@ -274,10 +288,19 @@ class PaintCommand(Command):
             if self.material.name not in reg:
                 reg[self.material.name] = self.material
                 self._added_mat = self.material.name
+        if self.finish is not None:
+            mat = scene.materials.get(self.finish[0])
+            if mat is not None:
+                self._old_finish = mat.finish
+                mat.finish = self.finish[1]
         self._flag(scene)
         scene.version += 1
 
     def undo(self, scene) -> None:
+        if self.finish is not None:
+            mat = scene.materials.get(self.finish[0])
+            if mat is not None:
+                mat.finish = self._old_finish
         for (f, _m, _p), old in zip(self.face_attrs, self._old_faces or []):
             self._put(f, old)
         if self.set_group and self.group is not None:
@@ -320,6 +343,18 @@ def plan_paint(scene, target, material, faces=None) -> dict:
     "report"}``. Split out so a test can check the plan."""
     from core.materials import Material, register  # noqa: F401
     paint = resolve_material(material)
+    finish = paint.pop("_finish", None)
+    reg = scene.materials
+    only_name = isinstance(material, dict) and not any(
+        material.get(k) is not None for k in
+        ("color", "texture", "library", "opacity"))
+    if only_name and paint.get("mat") in reg:
+        # A named material of the document, applied by its name alone.
+        paint = dict(reg[paint["mat"]].face_attrs())
+    elif only_name and paint.get("mat"):
+        raise ValueError(f"no material named {paint['mat']!r} in the "
+                         f"document; give its color/texture too. Known: "
+                         f"{sorted(reg)[:40]}")
     if isinstance(target, dict):
         group_name = target.get("group")
         faces = target.get("faces", faces)
@@ -338,30 +373,40 @@ def plan_paint(scene, target, material, faces=None) -> dict:
                              f"{norm(group_name)!r}: rename one first")
         group, mesh = found[0], found[0].mesh
     mat = None
+    fin_change = None
     if paint.get("mat"):
         mat = Material(paint["mat"], paint.get("color"),
-                       paint.get("texture"), paint.get("opacity"))
+                       paint.get("texture"), paint.get("opacity"),
+                       finish=finish)
         if paint["mat"] in scene.materials:
             mat = None                       # already in the registry
+            if finish is not None and \
+                    scene.materials[paint["mat"]].finish != finish:
+                fin_change = (paint["mat"], finish)
     report = {"target": "loose geometry" if group is None
               else norm(group.name), "material": paint}
+    if finish is not None:
+        report["finish"] = finish
     if group is not None and faces is None:
         # The group as a whole: every face on the default material shows
         # it; faces painted themselves keep their own (the classic rule).
         targets = find_groups(scene, group_name)
         old = [getattr(g, "material", None) or None for g in targets]
         new = paint or None
-        if all((o or None) == new for o in old):
+        if all((o or None) == new for o in old) and mat is None \
+                and fin_change is None:
             report.update(changed=False, groups=len(targets), faces=0)
             return {"command": None, "report": report}
         if len(targets) == 1:
             cmd = PaintCommand(group=group, group_paint=new, set_group=True,
-                               material=mat)
+                               material=mat, finish=fin_change)
         else:
             from core.history import CompoundCommand
             cmd = CompoundCommand([PaintCommand(group=g, group_paint=new,
                                                 set_group=True,
                                                 material=mat if i == 0
+                                                else None,
+                                                finish=fin_change if i == 0
                                                 else None)
                                    for i, g in enumerate(targets)])
         own = sum(1 for g in targets for f in g.mesh.faces
@@ -376,10 +421,12 @@ def plan_paint(scene, target, material, faces=None) -> dict:
         cur = {k: f.attrs[k] for k in _PAINT_KEYS if k in f.attrs}
         if cur != paint:
             todo.append((f, mesh, dict(paint)))
-    report.update(faces=len(chosen), changed=bool(todo or mat))
-    if not todo and mat is None:
+    report.update(faces=len(chosen),
+                  changed=bool(todo or mat or fin_change))
+    if not todo and mat is None and fin_change is None:
         return {"command": None, "report": report}
-    return {"command": PaintCommand(todo, material=mat), "report": report}
+    return {"command": PaintCommand(todo, material=mat, finish=fin_change),
+            "report": report}
 
 
 def paint(viewport, target, material, faces=None) -> dict:
@@ -731,3 +778,433 @@ class RenderJobs:
         if j["proc"].poll() is None:
             j["proc"].kill()
         return {"job": str(job), "state": "cancelled"}
+
+
+# ---- Components and models (lot 2) -------------------------------------------------
+
+def _fold(text) -> str:
+    """Lower case without accents: «Lámpara» matches «lampara»."""
+    s = unicodedata.normalize("NFKD", str(text or "")).lower()
+    return "".join(c for c in s if not unicodedata.combining(c)).strip()
+
+
+def _cm(entry) -> list:
+    try:
+        return [float(v) for v in entry.get("cm") or []][:3]
+    except (TypeError, ValueError):
+        return []
+
+
+def bundled_components() -> list:
+    """The starter components shipped with the app (resources/components)."""
+    from core.paths import app_root
+    base = app_root() / "resources" / "components"
+    try:
+        items = json.loads((base / "components.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [{"id": "bundled:" + it["key"], "name": it.get("name", it["key"]),
+             "name_en": it.get("name", it["key"]), "category": "Starter",
+             "size_cm": [], "tip": it.get("tip", ""), "licence": "see "
+             "resources/components/SOURCES.md", "source": "bundled"}
+            for it in items if it.get("key")]
+
+
+def _library_entries() -> list:
+    from core import library
+    out = []
+    for e in library.index():
+        out.append({"id": e["id"], "name": e.get("nombre", ""),
+                    "name_en": e.get("nombre_en", ""),
+                    "category": e.get("categoria", ""),
+                    "size_cm": _cm(e), "licence": e.get("licencia_nombre")
+                    or e.get("licencia", ""), "author": e.get("autor", ""),
+                    "source": "library", "_entry": e})
+    return out
+
+
+def _size_distance(have: list, want) -> float:
+    if not want or not have:
+        return 0.0
+    d = 0.0
+    for h, w in zip(have, list(want) + [None] * 3):
+        if w is not None:
+            d += abs(float(h) - float(w))
+    return d
+
+
+def search_components(query: str = "", category=None, limit: int = 20,
+                      size_cm=None, _entries=None) -> dict:
+    """Models of the online library (Sweet Home 3D collections: names in
+    Spanish with an English translation, sizes in cm) and the bundled
+    starters whose name, English name, category or id contains every word
+    of ``query`` (accents and case ignored). ``size_cm`` [w, d, h] (any may
+    be null) ranks the closest sizes first."""
+    entries = _entries if _entries is not None else (
+        bundled_components() + _library_entries())
+    words = [w for w in _fold(query).split() if w]
+    cat = _fold(category) if category else None
+    hits = []
+    for e in entries:
+        hay = " ".join(_fold(e.get(k, "")) for k in
+                       ("name", "name_en", "category", "id"))
+        if cat and cat not in _fold(e.get("category", "")):
+            continue
+        if not all(w in hay for w in words):
+            continue
+        exact = (_fold(e.get("name")) == _fold(query)
+                 or _fold(e.get("name_en")) == _fold(query))
+        hits.append((0 if exact else 1, _size_distance(e["size_cm"], size_cm),
+                     e))
+    hits.sort(key=lambda t: (t[0], t[1], _fold(t[2].get("name"))))
+    limit = max(1, min(int(limit or 20), 100))
+    shown = [{k: v for k, v in e.items() if not k.startswith("_")}
+             for _x, _d, e in hits[:limit]]
+    cats = sorted({e.get("category", "") for e in entries if e.get("category")})
+    return {"total": len(hits), "results": shown,
+            "truncated": len(hits) > limit, "categories": cats}
+
+
+class ImportStep(Command):
+    """Put a ready group in the scene as ONE undo step, with whatever the
+    import added to the layers and the material registry: undo takes all
+    of it back, redo puts it again."""
+
+    def __init__(self, group, materials_before: dict, layers_before: list):
+        self.group = group
+        self._mat_before = dict(materials_before)
+        self._lay_before = list(layers_before)
+        self._mat_after = None
+        self._lay_after = None
+
+    def do(self, scene) -> None:
+        if self._mat_after is None:
+            self._mat_after = dict(scene.materials)
+            self._lay_after = list(scene.layers)
+        else:
+            scene.materials.clear()
+            scene.materials.update(self._mat_after)
+            scene.layers[:] = self._lay_after
+        if self.group not in scene.groups:
+            scene.groups.append(self.group)
+        scene.version += 1
+
+    def undo(self, scene) -> None:
+        if self.group in scene.groups:
+            scene.groups.remove(self.group)
+        scene.selection.discard(self.group)
+        scene.materials.clear()
+        scene.materials.update(self._mat_before)
+        scene.layers[:] = self._lay_before
+        scene.version += 1
+
+
+def _world_box(group):
+    from core.group import iter_placements
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    for g, m in iter_placements(group):
+        for v in g.mesh.vertices:
+            p = m.map(v.position) if m is not None else v.position
+            for i, c in enumerate((p.x(), p.y(), p.z())):
+                lo[i] = min(lo[i], c)
+                hi[i] = max(hi[i], c)
+    if lo[0] == float("inf"):
+        return None
+    return lo, hi
+
+
+def _pose(group, position, rotation_deg: float = 0.0,
+          anchor: str = "base") -> None:
+    """Make ``group`` a placed instance: its anchor (the centre of its base,
+    or the file's origin) at ``position``, turned ``rotation_deg`` about
+    the vertical through the anchor."""
+    from PySide6.QtGui import QMatrix4x4, QVector3D
+    if getattr(group, "xform", None) is None:
+        group.xform = QMatrix4x4()
+    if anchor == "origin":
+        a = group.xform.map(QVector3D(0.0, 0.0, 0.0))
+    else:
+        box = _world_box(group)
+        a = (QVector3D(0.0, 0.0, 0.0) if box is None else
+             QVector3D((box[0][0] + box[1][0]) / 2.0,
+                       (box[0][1] + box[1][1]) / 2.0, box[0][2]))
+    p = QVector3D(*[float(c) for c in position])
+    m = QMatrix4x4()
+    m.translate(p)
+    m.rotate(float(rotation_deg or 0.0), 0.0, 0.0, 1.0)
+    m.translate(-a)
+    group.xform = m * group.xform
+
+
+def _insert(viewport, group, mats: dict, lays: list, name=None, layer=None,
+            ifc=None) -> dict:
+    """``group`` into the scene as one undo step, named, tagged and on its
+    layer. ``mats``/``lays``: the registry and layers BEFORE the import, so
+    the undo takes back what it added."""
+    from core.group import iter_placements
+    scene = viewport.scene
+    if name:
+        group.name = norm(name)
+    if layer:
+        from core.layers import Layer
+        layer = norm(layer)
+        if scene.layer(layer) is None:
+            scene.layers.append(Layer(layer))
+        group.layer = layer
+    if ifc:
+        from core import bim
+        bim.tag_group(group, ifc, group.name)
+    viewport.history.execute(ImportStep(group, mats, lays))
+    if viewport.history.last_error:
+        raise RuntimeError(viewport.history.last_error)
+    _refresh(viewport)
+    out = {"name": group.name,
+           "faces": sum(len(g.mesh.faces) for g, _m in iter_placements(group)),
+           "layer": group.layer,
+           "ifc": (getattr(group, "ifc", None) or {}).get("class"),
+           "materials_added": sorted(set(scene.materials) - set(mats))}
+    box = _world_box(group)
+    if box is not None:
+        out["bounds"] = {"min": box[0], "max": box[1]}
+        out["size_m"] = [round(box[1][i] - box[0][i], 4) for i in range(3)]
+    return out
+
+
+def _shared_copy(viewport, source: str):
+    """A new placement of a definition already in the model (the window's
+    shared components, the cache the UI's placement fills too), or None."""
+    from PySide6.QtGui import QMatrix4x4
+    from core.group import copy_group
+    window = viewport.window() if hasattr(viewport, "window") else None
+    shared = getattr(window, "__dict__", {}).get("_shared_components") \
+        if window is not None else None
+    known = (shared or {}).get(source)
+    if not known:
+        return None
+    mesh, base = known
+    live = next((g for g in viewport.scene.groups
+                 if g.mesh is mesh and g.is_component()), None)
+    if live is None:
+        return None
+    group = copy_group(live)
+    group.xform = QMatrix4x4(base)
+    group.hidden = group.locked = False
+    group.material = group.layer = group.ifc = None
+    return group
+
+
+def _remember_shared(viewport, source: str, group) -> None:
+    from PySide6.QtGui import QMatrix4x4
+    window = viewport.window() if hasattr(viewport, "window") else None
+    if window is None or not hasattr(window, "__dict__"):
+        return
+    shared = window.__dict__.setdefault("_shared_components", {})
+    shared[source] = (group.mesh, QMatrix4x4(group.xform))
+
+
+def _build_library(entry: dict):
+    """A library model as a component group at its real size, Z up."""
+    from core import library
+    from core.group import Group
+    from core.scene import Scene as _Scene
+    from formats import obj as _obj
+    from formats.fuse import soften_smooth_edges
+    obj = library.model_file(entry)
+    if obj is None:
+        raise RuntimeError(f"could not download {entry.get('nombre')!r} "
+                           "(no network, or the library is unreachable)")
+    temp = _Scene()
+    _obj.load_obj(temp, obj, matrix=library.model_matrix(entry, obj))
+    if temp.groups and temp.groups[0].children:
+        group = temp.groups[0]
+        for kid in group.children:
+            soften_smooth_edges(kid.mesh, cos_threshold=0.55)
+    else:
+        mesh = temp.mesh
+        if not mesh.faces and temp.groups:
+            mesh = temp.groups[0].mesh
+        if not mesh.faces:
+            raise RuntimeError(f"{entry.get('nombre')!r} has no geometry")
+        soften_smooth_edges(mesh, cos_threshold=0.55)
+        group = Group(mesh, name=entry.get("nombre", ""))
+    group.name = entry.get("nombre", "") or group.name
+    return group, temp
+
+
+def _build_bundled(key: str):
+    from core.group import Group
+    from core.paths import app_root
+    from core.scene import Scene as _Scene
+    base = app_root() / "resources" / "components"
+    temp = _Scene()
+    for ext in ("igz", "glb", "obj"):
+        p = base / f"{key}.{ext}"
+        if p.exists():
+            break
+    else:
+        raise ValueError(f"no bundled component {key!r}")
+    if ext == "igz":
+        from formats import igz as _igz
+        _igz.load_into(temp, p)
+    elif ext == "glb":
+        from formats.glb import load_glb
+        load_glb(temp, p)
+    else:
+        from formats import obj as _obj
+        _obj.load_obj(temp, p)
+    groups = [g for g in temp.groups if not getattr(g, "billboard", False)]
+    if not groups:
+        raise RuntimeError(f"bundled component {key!r} has no geometry")
+    g = groups[0]
+    return Group(g.mesh, name=g.name or key.capitalize()), temp
+
+
+def insert_component(viewport, id=None, query=None, position=(0, 0, 0),
+                     rotation=0.0, name=None, layer=None, ifc=None,
+                     size_cm=None, category=None) -> dict:
+    """Place a library or bundled model at its real size, as a component:
+    the centre of its base at ``position`` (m), turned ``rotation``° about
+    the vertical. ``id`` from search_components, or ``query`` (+ ``size_cm``,
+    ``category``) when it names one model. Copies of a model already in the
+    document share its definition."""
+    if id is None:
+        if not query:
+            raise ValueError("give the model's id (search_components) or a "
+                             "query")
+        found = search_components(query, category=category, limit=12,
+                                  size_cm=size_cm)
+        res = found["results"]
+        if not res:
+            raise ValueError(f"no model matches {query!r}. Categories: "
+                             f"{found['categories']}")
+        exact = [r for r in res if _fold(r["name"]) == _fold(query)
+                 or _fold(r["name_en"]) == _fold(query)]
+        pick = None
+        if size_cm and res:
+            pick = res[0]
+        elif len(exact) == 1:
+            pick = exact[0]
+        elif len(res) == 1:
+            pick = res[0]
+        if pick is None:
+            raise ValueError(
+                f"{found['total']} models match {query!r}: give id= or "
+                "size_cm=. Candidates: " + json.dumps(
+                    [{k: r.get(k) for k in ("id", "name", "name_en",
+                                            "category", "size_cm")}
+                     for r in res], ensure_ascii=False))
+        id = pick["id"]
+    id = str(id)
+    source = ("bundled:" + id.split(":", 1)[1] if id.startswith("bundled:")
+              else "library:" + id)
+    if hasattr(viewport, "end_group_edit"):
+        viewport.end_group_edit()
+    mats, lays = dict(viewport.scene.materials), list(viewport.scene.layers)
+    info = {"id": id}
+    group = _shared_copy(viewport, source)
+    shared = group is not None
+    if group is None:
+        if source.startswith("bundled:"):
+            group, temp = _build_bundled(source.split(":", 1)[1])
+            info.update(licence="see resources/components/SOURCES.md")
+        else:
+            from core import library
+            entry = next((e for e in library.index() if e["id"] == id), None)
+            if entry is None:
+                raise ValueError(f"no library model with id {id!r}")
+            group, temp = _build_library(entry)
+            info.update(licence=entry.get("licencia_nombre")
+                        or entry.get("licencia"), author=entry.get("autor"),
+                        catalogue_size_cm=_cm(entry))
+            from core.insert import merge_materials
+            merge_materials(getattr(temp, "materials", {}) or {},
+                            viewport.scene.materials, group)
+        from PySide6.QtGui import QMatrix4x4
+        if group.xform is None:
+            group.xform = QMatrix4x4()
+        group.component = True
+        _remember_shared(viewport, source, group)
+    _pose(group, position, rotation, "base")
+    out = _insert(viewport, group, mats, lays, name=name, layer=layer,
+                  ifc=ifc)
+    out.update(info, shared_definition=shared, position=list(position),
+               rotation=float(rotation or 0.0))
+    return out
+
+
+#: What import_model reads, by suffix.
+MODEL_SUFFIXES = (".glb", ".gltf", ".obj", ".dae", ".skp", ".stl", ".igz")
+
+
+def import_model(viewport, path, position=None, rotation=0.0, units="auto",
+                 name=None, layer=None, ifc=None, anchor="base") -> dict:
+    """A 3D model file as ONE component, one undo step: GLB/glTF, OBJ, DAE,
+    SKP, STL or IGZ. ``position`` (m) puts its anchor there — the centre of
+    its base, or the file's origin with ``anchor="origin"`` — turned
+    ``rotation``° about the vertical; without it the model stays where its
+    file puts it. ``units`` for OBJ/STL (no unit in the file): auto, m, cm,
+    mm, in, ft."""
+    from core.insert import import_document_as_component
+    from core.scene import Scene as _Scene
+    p = Path(os.path.expanduser(str(path)))
+    suffix = p.suffix.lower()
+    if suffix not in MODEL_SUFFIXES:
+        raise ValueError(f"import_model reads {MODEL_SUFFIXES}; DXF goes "
+                         "through import_dxf")
+    if not p.is_file():
+        raise FileNotFoundError(f"no such file: {p}")
+    if anchor not in ("base", "origin"):
+        raise ValueError("anchor is 'base' or 'origin'")
+    temp = _Scene()
+    used_units = None
+    offset = None
+    if suffix in (".glb", ".gltf"):
+        from formats.glb import load_glb
+        offset = load_glb(temp, p)
+    elif suffix == ".dae":
+        from formats.dae import load_dae
+        offset = load_dae(temp, p)
+    elif suffix == ".skp":
+        from formats.skp import load_skp
+        load_skp(temp, p)
+    elif suffix == ".igz":
+        from formats import igz as _igz
+        _igz.load_into(temp, p)
+    else:
+        from formats.obj import OBJ_UNITS, suggest_unit
+        u = str(units or "auto").lower()
+        if u == "auto":
+            u = suggest_unit(p) if suffix == ".obj" else "mm"
+        if u not in OBJ_UNITS:
+            raise ValueError(f"units is 'auto' or one of {tuple(OBJ_UNITS)}")
+        used_units = u
+        if suffix == ".obj":
+            from formats.obj import load_obj
+            load_obj(temp, p, scale=OBJ_UNITS[u], require_geometry=True)
+        else:
+            from formats.stl import load_stl
+            load_stl(temp, p, scale=OBJ_UNITS[u])
+    scene = viewport.scene
+    mats, lays = dict(scene.materials), list(scene.layers)
+    group = import_document_as_component(scene, temp, norm(name) if name
+                                         else p.stem)
+    if group is None:
+        scene.materials.clear()
+        scene.materials.update(mats)
+        scene.layers[:] = lays
+        raise RuntimeError(f"{p.name} holds no geometry")
+    if hasattr(viewport, "end_group_edit"):
+        viewport.end_group_edit()
+    from PySide6.QtGui import QMatrix4x4
+    if group.xform is None:
+        group.xform = QMatrix4x4()
+    group.component = True
+    if position is not None:
+        _pose(group, position, rotation, anchor)
+    out = _insert(viewport, group, mats, lays, name=name, layer=layer,
+                  ifc=ifc)
+    out.update(format=suffix.lstrip("."), units=used_units,
+               survey_offset=offset,
+               children=len(getattr(group, "children", []) or []))
+    return out

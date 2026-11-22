@@ -15,7 +15,7 @@ Tools: run_python (transactional, one undo step per call), query_model,
 screenshot (the agent SEES the viewport), undo, redo — and, in the
 chems/ingetrazo «mcp-agent» fork: save, open, export_ifc, quantities_csv,
 render (Blender, waited for), import_dxf, paint, add_light, list_lights,
-remove_light. Every mutation goes through IngeTrazo's command engine — the
+remove_light, search_components, insert_component, import_model. Every mutation goes through IngeTrazo's command engine — the
 hermeticity guard validates the agent's recipes, and Ctrl+Z always works.
 
 Text is UTF-8 both ways, whatever the console code page: on Windows a
@@ -75,8 +75,9 @@ INSTRUCTIONS = (
     "historial de deshacer.\n" + REFERENCE + "\nEmpieza por query_model "
     "para ver qué hay, construye con run_python y MIRA el resultado con "
     "screenshot. Para archivos, pintura, luces y render usa las "
-    "herramientas dedicadas (save, open, import_dxf, export_ifc, "
-    "quantities_csv, paint, add_light, render), no run_python.")
+    "herramientas dedicadas (save, open, import_dxf, import_model, "
+    "search_components, insert_component, export_ifc, quantities_csv, "
+    "paint, add_light, render), no run_python.")
 
 _OBJ = {"type": "object"}
 _PATH = {"type": "string",
@@ -204,8 +205,11 @@ TOOLS = [
             "0-255), {\"texture\": {\"path\", \"sw\", \"sh\", \"rot\"}} "
             "(tile size m, rotation °), {\"library\": \"brick_red\"} (a "
             "shipped texture; sw/sh/rot beside it override), \"opacity\" "
-            "0-1, \"name\" (named document material). {} = default "
-            "material."),
+            "0-1, \"name\" (named document material; {\"name\": n} alone "
+            "applies that material), \"finish\" matte|satin|gloss|metal|"
+            "glass|water (how the Blender render treats it; needs \"name\"; "
+            "otherwise guessed from Spanish/English names only). {} = "
+            "default material."),
         "inputSchema": {"type": "object", "properties": {
             "target": {"description": "Group name, \"@loose\", or "
                                       "{group, faces}."},
@@ -248,6 +252,72 @@ TOOLS = [
         "description": "Remove a render light by index or name (undoable).",
         "inputSchema": {"type": "object", "properties": {
             "index": {"type": "integer"}, "name": {"type": "string"}}},
+    },
+    {
+        "name": "search_components",
+        "description": (
+            "Search IngeTrazo's component library (~1500 real-size models "
+            "from the Sweet Home 3D collections: names in Spanish with an "
+            "English translation, e.g. 'Cama'/'Bed', 'Silla'/'Chair', "
+            "'Lampara'/'Lamp'; categories Dormitorio, Salón, Cocina, "
+            "Cuarto de Baño, Oficina, Iluminación, Exterior, Puertas y "
+            "Ventanas…) and the bundled starters. Every word of query "
+            "must match; size_cm [w, d, h] (nulls allowed) ranks the "
+            "closest first. Returns id, name, name_en, category, size_cm, "
+            "licence, author."),
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "category": {"type": "string"},
+            "limit": {"type": "integer"},
+            "size_cm": {"type": "array",
+                        "items": {"type": ["number", "null"]}}}},
+    },
+    {
+        "name": "insert_component",
+        "description": (
+            "Place a library model at its real size as a component (one "
+            "undo step): the centre of its base at position [x,y,z] m, "
+            "turned rotation degrees about the vertical. id from "
+            "search_components, or query (+ size_cm/category) naming one "
+            "model. Optional name, layer, ifc (e.g. 'IfcFurniture'). "
+            "Copies of a model share one definition. Downloads the model "
+            "the first time (needs the network on the IngeTrazo machine). "
+            "Returns name, size_m, bounds, licence and author (credit "
+            "CC-BY models when publishing images)."),
+        "inputSchema": {"type": "object", "properties": {
+            "id": {"type": "string"},
+            "query": {"type": "string"},
+            "position": {"type": "array", "items": {"type": "number"}},
+            "rotation": {"type": "number"},
+            "name": {"type": "string"},
+            "layer": {"type": "string"},
+            "ifc": {"type": "string"},
+            "size_cm": {"type": "array",
+                        "items": {"type": ["number", "null"]}},
+            "category": {"type": "string"}}},
+    },
+    {
+        "name": "import_model",
+        "description": (
+            "Import a 3D model file as ONE component (one undo step): "
+            "GLB/glTF (best: textures and PBR materials), OBJ, DAE, SKP, "
+            "STL or IGZ. position [x,y,z] m puts its anchor there (anchor "
+            "'base' = centre of its base, default; 'origin' = the file's "
+            "origin), turned rotation degrees; without position it stays "
+            "where the file puts it. units for OBJ/STL only (no unit in "
+            "the file): auto, m, cm, mm, in, ft. Optional name, layer, "
+            "ifc. Returns faces, size_m, bounds, materials added."),
+        "inputSchema": {"type": "object", "properties": {
+            "path": _PATH,
+            "position": {"type": "array", "items": {"type": "number"}},
+            "rotation": {"type": "number"},
+            "units": {"type": "string",
+                      "enum": ["auto", "m", "cm", "mm", "in", "ft"]},
+            "anchor": {"type": "string", "enum": ["base", "origin"]},
+            "name": {"type": "string"},
+            "layer": {"type": "string"},
+            "ifc": {"type": "string"}},
+            "required": ["path"]},
     },
     {
         "name": "render",

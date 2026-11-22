@@ -105,7 +105,7 @@ jobs:
           # teardown can crash the interpreter AFTER the tests have passed
           # (exit 139 with «36 passed»).
           python -m pytest -q -p no:cacheprovider --junitxml="$RUNNER_TEMP/mcp.xml" \
-            tests/test_mcp_agent_tools.py tests/test_ai_bridge.py tests/test_mcp_client_host.py || true
+            tests/test_mcp_agent_tools.py tests/test_mcp_agent_components.py tests/test_ai_bridge.py tests/test_mcp_client_host.py || true
           python -c "import sys, xml.etree.ElementTree as E; r = E.parse(sys.argv[1]).getroot(); s = r if r.tag == 'testsuite' else r.find('testsuite'); bad = int(s.get('failures')) + int(s.get('errors')); print('tests:', s.get('tests'), 'failures+errors:', bad); sys.exit(1 if bad or int(s.get('tests')) == 0 else 0)" "$RUNNER_TEMP/mcp.xml"
 
       # DWG en Windows (#101): el dwg2dxf.exe OFICIAL de LibreDWG (su

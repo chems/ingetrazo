@@ -431,6 +431,31 @@ class _Bridge(QObject):
         from core.agent_tools import remove_light
         return remove_light(self._viewport, index=index, name=name)
 
+    # ---- Components and 3D models -------------------------------------------
+    def _tool_search_components(self, query: str = "", category=None,
+                                limit: int = 20, size_cm=None) -> dict:
+        from core.agent_tools import search_components
+        return search_components(query, category=category, limit=limit,
+                                 size_cm=size_cm)
+
+    def _tool_insert_component(self, id=None, query=None,
+                               position=(0, 0, 0), rotation=0.0, name=None,
+                               layer=None, ifc=None, size_cm=None,
+                               category=None) -> dict:
+        from core.agent_tools import insert_component
+        return insert_component(self._viewport, id=id, query=query,
+                                position=position, rotation=rotation,
+                                name=name, layer=layer, ifc=ifc,
+                                size_cm=size_cm, category=category)
+
+    def _tool_import_model(self, path: str, position=None, rotation=0.0,
+                           units: str = "auto", name=None, layer=None,
+                           ifc=None, anchor: str = "base") -> dict:
+        from core.agent_tools import import_model
+        return import_model(self._viewport, path, position=position,
+                            rotation=rotation, units=units, name=name,
+                            layer=layer, ifc=ifc, anchor=anchor)
+
     # ---- Blender render (started here, waited for by the MCP client) --------
     def _renders(self):
         jobs = getattr(self, "_render_jobs", None)
