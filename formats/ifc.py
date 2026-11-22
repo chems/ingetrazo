@@ -158,7 +158,8 @@ def save_ifc(scene, path, project_name: str = "IngeTrazo project") -> int:
 
     element_ids = []
     for obj in objects:
-        faces = obj.get("faces") or list(obj["group"].mesh.faces)
+        faces = (obj.get("faces") or obj.get("world_faces")
+                 or list(obj["group"].mesh.faces))
         if not faces:
             continue
         rep = _brep(w, faces, context)

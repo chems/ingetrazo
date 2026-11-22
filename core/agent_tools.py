@@ -368,9 +368,6 @@ def plan_paint(scene, target, material, faces=None) -> dict:
             names = sorted({norm(g.name) for g in walk_groups(scene.groups)})
             raise ValueError(f"no group named {norm(group_name)!r}. "
                              f"Groups: {names[:60]}")
-        if len(found) > 1 and faces is not None:
-            raise ValueError(f"{len(found)} groups are named "
-                             f"{norm(group_name)!r}: rename one first")
         group, mesh = found[0], found[0].mesh
     mat = None
     fin_change = None
@@ -415,13 +412,24 @@ def plan_paint(scene, target, material, faces=None) -> dict:
         report.update(changed=True, groups=len(targets), faces=0,
                       faces_keeping_own_paint=own)
         return {"command": cmd, "report": report}
-    chosen = _select_faces(mesh, faces)
-    todo = []
-    for f in chosen:
-        cur = {k: f.attrs[k] for k in _PAINT_KEYS if k in f.attrs}
-        if cur != paint:
-            todo.append((f, mesh, dict(paint)))
-    report.update(faces=len(chosen),
+    # Faces of EVERY group of that name (four window frames named alike
+    # are painted together); a mesh shared by copies is painted once.
+    if group is None:
+        meshes = [scene.mesh]
+    else:
+        meshes, seen = [], set()
+        for g in find_groups(scene, group_name):
+            if id(g.mesh) not in seen:
+                seen.add(id(g.mesh))
+                meshes.append(g.mesh)
+    chosen, todo = [], []
+    for m in meshes:
+        for f in _select_faces(m, faces):
+            chosen.append(f)
+            cur = {k: f.attrs[k] for k in _PAINT_KEYS if k in f.attrs}
+            if cur != paint:
+                todo.append((f, m, dict(paint)))
+    report.update(faces=len(chosen), groups=len(meshes),
                   changed=bool(todo or mat or fin_change))
     if not todo and mat is None and fin_change is None:
         return {"command": None, "report": report}

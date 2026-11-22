@@ -342,6 +342,11 @@ def collect_objects(scene, memo: dict | None = None) -> list[dict]:
             "area": face_set_area(faces),
             "volume": face_set_volume(faces),
             "group": g,
+            # What was measured, in world space: a component's placement
+            # and nested parts included. The IFC and the CSV read these —
+            # the group's own mesh alone is local, and EMPTY for a
+            # component made of parts (fork mcp-agent, 22-11-2026).
+            "world_faces": faces,
         }
         if memo is not None:
             memo[sig] = obj
@@ -557,6 +562,8 @@ def quantities_csv(scene) -> str:
     lines = ["class,name,metrado,unit,area_m2,volume_m3"]
     for obj in collect_objects(scene):
         faces = obj.get("faces")
+        if faces is None:
+            faces = obj.get("world_faces")
         if faces is None:
             faces = list(obj["group"].mesh.faces)
         _, _, (metrado, unit) = class_quantities(obj["class"], faces)

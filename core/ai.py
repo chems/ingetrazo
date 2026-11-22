@@ -450,6 +450,7 @@ class AgentStep(SnapshotImport):
         self._meshes: list = []        # (mesh, before, after)
         self._fields: list = []        # (group, before, after)
         self._plugin: tuple | None = None
+        self._mats: tuple | None = None
 
     @staticmethod
     def _apply_fields(g, state) -> None:
@@ -476,6 +477,8 @@ class AgentStep(SnapshotImport):
                 self._apply_fields(g, a)
             if self._plugin is not None:
                 scene.plugin_data = json.loads(self._plugin[1])
+            if self._mats is not None:
+                self._put_mats(scene, self._mats[1])
             return
         from core.agent_tools import flag_paint, group_meshes, walk_groups
         meshes = group_meshes(scene)
@@ -484,6 +487,7 @@ class AgentStep(SnapshotImport):
         before_g = [(g, _group_state(g)) for g in groups]
         plugin_before = json.dumps(getattr(scene, "plugin_data", {}) or {},
                                    sort_keys=True, default=repr)
+        mats_before = self._mat_state(scene)
         try:
             loose_before = scene.mesh.capture_state()
             super().do(scene)
@@ -493,6 +497,7 @@ class AgentStep(SnapshotImport):
             for g, b in before_g:
                 self._apply_fields(g, b)
             scene.plugin_data = json.loads(plugin_before)
+            self._put_mats(scene, mats_before)
             raise
         for m, b in before_m:
             a = m.capture_state()
@@ -511,6 +516,30 @@ class AgentStep(SnapshotImport):
                                   sort_keys=True, default=repr)
         if plugin_after != plugin_before:
             self._plugin = (plugin_before, plugin_after)
+        mats_after = self._mat_state(scene)
+        if mats_after != mats_before:
+            self._mats = (mats_before, mats_after)
+
+    # The document's named materials (scene.materials): which ones, and the
+    # recipe and finish of each — a recipe that registered one, or set its
+    # finish, is undone with the rest.
+    @staticmethod
+    def _mat_state(scene) -> tuple:
+        import copy
+        reg = getattr(scene, "materials", None) or {}
+        return tuple((name, m, copy.deepcopy(m.to_dict()))
+                     for name, m in reg.items())
+
+    @staticmethod
+    def _put_mats(scene, state) -> None:
+        from core.materials import Material
+        reg = scene.materials
+        reg.clear()
+        for name, m, raw in state:
+            fresh = Material.from_dict(raw)
+            m.color, m.texture = fresh.color, fresh.texture
+            m.opacity, m.finish = fresh.opacity, fresh.finish
+            reg[name] = m
 
     def undo(self, scene) -> None:
         super().undo(scene)
@@ -520,11 +549,13 @@ class AgentStep(SnapshotImport):
             self._apply_fields(g, b)
         if self._plugin is not None:
             scene.plugin_data = json.loads(self._plugin[0])
+        if self._mats is not None:
+            self._put_mats(scene, self._mats[0])
 
     @property
     def changed(self) -> bool:
         return (super().changed or bool(self._meshes) or bool(self._fields)
-                or self._plugin is not None)
+                or self._plugin is not None or self._mats is not None)
 
 
 def run_transactional(viewport, code: str, scope: dict) -> dict:

@@ -69,6 +69,16 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   tronquée (`groups_total`, `group_names_truncated`,
   `group_names_next_offset` ; paramètres `offset`/`limit`).
 - `undo`/`redo` du pont préviennent les panneaux (Rendu, Scènes…).
+- **IFC et métré des composants** (défaut d'origine, révélé par le lot 2) :
+  un objet étiqueté qui est un composant partait avec la géométrie de son
+  seul maillage propre, en coordonnées locales. Un composant fait de
+  plusieurs pièces (la plupart des modèles de la bibliothèque) manquait
+  donc à l'IFC, et son métré restait vide. L'IFC et le CSV lisent
+  maintenant les faces mesurées en coordonnées du modèle, pièces comprises.
+- `paint` peint les faces de tous les groupes du même nom (les quatre
+  cadres d'une fenêtre), au lieu de demander d'en renommer un.
+- `run_python` : l'annulation couvre aussi le registre des matières (une
+  matière créée ou une finition changée par script).
 - `open` ne signale plus de copie auto-enregistrée pour un document déjà
   ouvert dans un onglet (constaté à l'essai de réception du 22-11-2026,
   juste après un `save`).

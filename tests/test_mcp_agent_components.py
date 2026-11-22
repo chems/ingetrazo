@@ -285,3 +285,69 @@ def test_client_lists_the_lot_2_tools():
     desc = next(t for t in client.TOOLS
                 if t["name"] == "run_python")["description"]
     assert "insert_component" in desc and "finish" in desc
+
+
+# ---- Fixes found by the lot-2 acceptance run (22-11-2026) ----------------------------
+
+def test_paint_faces_of_every_group_with_that_name(win, bridge):
+    vp = win.viewport
+    frames = [_box_group(vp.scene, "A-FENETRE-120 cadre", origin=(i * 2, 0, 0))
+              for i in range(4)]
+    res = _ok(_ask(bridge, "paint", {
+        "target": "A-FENETRE-120 cadre", "faces": "all",
+        "material": {"color": [0.22, 0.23, 0.25], "name": "Alu anthracite",
+                     "finish": "metal"}}))
+    assert res["changed"] and res["groups"] == 4 and res["faces"] == 24
+    assert all(f.attrs.get("mat") == "Alu anthracite"
+               for g in frames for f in g.mesh.faces)
+    assert vp.history.undo()
+    assert not any(f.attrs.get("mat") for g in frames for f in g.mesh.faces)
+
+
+def test_run_python_material_registry_is_undone(win, bridge):
+    vp = win.viewport
+    res = _ok(_ask(bridge, "run_python", {"code": (
+        "from core.materials import Material\n"
+        "scene.materials['Inox'] = Material('Inox', (0.7, 0.7, 0.72), "
+        "finish='metal')")}))
+    assert res["changed"] is True and "Inox" in vp.scene.materials
+    assert vp.history.undo() and "Inox" not in vp.scene.materials
+    assert vp.history.redo()
+    assert vp.scene.materials["Inox"].finish == "metal"
+    res = _ok(_ask(bridge, "run_python", {"code":
+                                          "scene.materials['Inox'].finish = 'gloss'"}))
+    assert res["changed"] is True
+    assert vp.history.undo() and vp.scene.materials["Inox"].finish == "metal"
+
+
+def _two_part_igz(tmp_path):
+    """A piece of furniture made of two parts (as library models often are)."""
+    from core.scene import Scene
+    from formats.igz import save_scene
+    s = Scene()
+    _box_group(s, "plateau", origin=(0, 0, 1))
+    _box_group(s, "pied", origin=(0, 0, 0))
+    save_scene(s, tmp_path / "meuble.igz")
+    return tmp_path / "meuble.igz"
+
+
+def test_ifc_and_csv_take_a_component_with_its_parts_where_it_stands(
+        win, bridge, tmp_path):
+    path = _two_part_igz(tmp_path)
+    res = _ok(_ask(bridge, "import_model", {
+        "path": str(path), "position": [20, 30, 0], "name": "Meuble",
+        "ifc": "IfcFurniture"}))
+    assert res["children"] == 2
+    out = _ok(_ask(bridge, "export_ifc", {"path": str(tmp_path / "m.ifc")}))
+    text = Path(out["path"]).read_text("ascii")
+    assert out["elements"] == 1 and "'Meuble'" in text
+    # Its points are in world space: around x = 20, y = 30 — not at the
+    # parts' local origin.
+    import re
+    xs = [float(m.group(1)) for m in re.finditer(
+        r"IFCCARTESIANPOINT\(\(([-0-9.]+),([-0-9.]+),", text)]
+    assert any(19.0 < x < 21.0 for x in xs)
+    csv = _ok(_ask(bridge, "quantities_csv", {"path": str(tmp_path / "q.csv")}))
+    line = [l for l in Path(csv["path"]).read_text("utf-8").splitlines()
+            if "Meuble" in l][0]
+    assert line.split(",")[2] != ""          # the metrado is measured
