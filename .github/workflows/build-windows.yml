@@ -336,6 +336,27 @@ jobs:
             dist/ingetrazo-setup-v*.exe
           retention-days: 7
 
+      # Fork chems/ingetrazo: the branch build also lands on ONE pre-release
+      # of the fork (tag mcp-agent-latest, assets replaced each time), the
+      # only place a user's machine can download it from without a GitHub
+      # login (Actions artifacts need one, and their storage host is
+      # blocked on locked-down machines).
+      - name: Pré-release du fork (branche mcp-agent)
+        if: github.ref == 'refs/heads/mcp-agent' && github.repository == 'chems/ingetrazo'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mcp-agent-latest
+          name: "IngeTrazo fork mcp-agent (build de la branche)"
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Build Windows de la branche `mcp-agent` du fork chems/ingetrazo
+            (GPL-3.0, voir AUTHORS et CHANGELOG.md). Commit ${{ github.sha }}.
+            Ce n'est pas une version officielle d'IngeTrazo.
+          files: |
+            dist/ingetrazo-windows.zip
+
       # En push de tag: adjunta los binarios al Release de esa versión.
       - name: Publicar en el Release (solo tags)
         if: startsWith(github.ref, 'refs/tags/')
