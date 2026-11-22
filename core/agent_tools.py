@@ -842,12 +842,19 @@ def _size_distance(have: list, want) -> float:
 
 
 def search_components(query: str = "", category=None, limit: int = 20,
-                      size_cm=None, _entries=None) -> dict:
+                      size_cm=None, preview: bool = False, sheet_path=None,
+                      _entries=None) -> dict:
     """Models of the online library (Sweet Home 3D collections: names in
     Spanish with an English translation, sizes in cm) and the bundled
     starters whose name, English name, category or id contains every word
     of ``query`` (accents and case ignored). ``size_cm`` [w, d, h] (any may
-    be null) ranks the closest sizes first."""
+    be null) ranks the closest sizes first.
+
+    Every result carries ``n``, its number in the list. With ``preview``
+    (or a ``sheet_path``) the first :data:`SHEET_MAX` results get their
+    picture (``thumbnail``, a local PNG) and a numbered contact sheet of
+    them is drawn (``sheet``): what a person needs to CHOOSE a model
+    rather than have one chosen for them."""
     entries = _entries if _entries is not None else (
         bundled_components() + _library_entries())
     words = [w for w in _fold(query).split() if w]
@@ -866,11 +873,151 @@ def search_components(query: str = "", category=None, limit: int = 20,
                      e))
     hits.sort(key=lambda t: (t[0], t[1], _fold(t[2].get("name"))))
     limit = max(1, min(int(limit or 20), 100))
-    shown = [{k: v for k, v in e.items() if not k.startswith("_")}
-             for _x, _d, e in hits[:limit]]
+    shown = [dict({k: v for k, v in e.items() if not k.startswith("_")},
+                  n=i + 1)
+             for i, (_x, _d, e) in enumerate(hits[:limit])]
     cats = sorted({e.get("category", "") for e in entries if e.get("category")})
-    return {"total": len(hits), "results": shown,
-            "truncated": len(hits) > limit, "categories": cats}
+    out = {"total": len(hits), "results": shown,
+           "truncated": len(hits) > limit, "categories": cats}
+    if (preview or sheet_path) and shown:
+        first = shown[:SHEET_MAX]
+        pics = component_thumbnails(first)
+        for r in first:
+            r["thumbnail"] = str(pics[r["id"]]) if pics.get(r["id"]) else None
+        if sheet_path:
+            dst = check_out_path(sheet_path, ".png")
+        else:
+            import tempfile
+            d = Path(tempfile.gettempdir()) / "ingetrazo-ai"
+            d.mkdir(parents=True, exist_ok=True)
+            dst = d / "components.png"
+        contact_sheet(first, pics, dst)
+        out["sheet"] = str(dst)
+        out["sheet_count"] = len(first)
+        out["without_picture"] = [r["n"] for r in first
+                                  if not r["thumbnail"]]
+    return out
+
+
+#: Pictures on one contact sheet, at most: two rows of four reads at a
+#: glance; past that a person scrolls instead of choosing.
+SHEET_MAX = 12
+
+
+def component_thumbnails(results) -> dict:
+    """{id: Path | None} — the 128 px preview of each result: the bundled
+    starters' pictures shipped with the app, the library's from its cache
+    or downloaded (several at a time: each costs a round trip, not bytes).
+    None where there is none (offline, unknown model)."""
+    from core import library
+    from core.paths import app_root
+    pics = {}
+    todo = []
+    for r in results:
+        rid = r.get("id", "")
+        if rid.startswith("bundled:"):
+            p = (app_root() / "resources" / "components" / "thumbs"
+                 / ("%s.png" % rid.split(":", 1)[1]))
+            pics[rid] = p if p.is_file() else None
+        elif library.valid_id(rid):
+            todo.append(rid)
+        else:
+            pics[rid] = None
+    if todo:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for rid, p in zip(todo, pool.map(_safe_thumb, todo)):
+                pics[rid] = p
+    return pics
+
+
+def _safe_thumb(rid):
+    from core import library
+    try:
+        return library.thumbnail(rid)
+    except Exception:  # noqa: BLE001 — a missing preview never fails a search
+        return None
+
+
+def _size_label(size) -> str:
+    vals = [v for v in (size or [])][:3]
+    if len(vals) < 3 or any(v is None for v in vals):
+        return ""
+    return "%s × %s × %s cm" % tuple(("%g" % round(float(v))) for v in vals)
+
+
+def contact_sheet(results, pics: dict, path) -> Path:
+    """Draw the numbered sheet of ``results`` (each with its picture, name,
+    English name, size w × d × h and licence) as a PNG at ``path``."""
+    from PySide6.QtCore import QRect, QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+
+    cols = min(4, max(1, len(results)))
+    rows = (len(results) + cols - 1) // cols
+    cw, ch, pad = 210, 250, 10
+    img = QImage(cols * cw, rows * ch, QImage.Format_RGB32)
+    img.fill(QColor(255, 255, 255))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    base = QFont(p.font())
+    base.setPixelSize(13)
+    small = QFont(base)
+    small.setPixelSize(11)
+    bold = QFont(base)
+    bold.setBold(True)
+    badge = QFont(base)
+    badge.setPixelSize(15)
+    badge.setBold(True)
+    for i, r in enumerate(results):
+        x, y = (i % cols) * cw, (i // cols) * ch
+        p.setPen(QPen(QColor(220, 220, 220)))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(x + 3, y + 3, cw - 6, ch - 6)
+        pic_rect = QRect(x + (cw - 160) // 2, y + pad + 4, 160, 160)
+        pic = pics.get(r.get("id"))
+        thumb = QImage(str(pic)) if pic else QImage()
+        if not thumb.isNull():
+            scaled = thumb.scaled(pic_rect.size(), Qt.KeepAspectRatio,
+                                  Qt.SmoothTransformation)
+            p.drawImage(pic_rect.x() + (pic_rect.width() - scaled.width()) // 2,
+                        pic_rect.y() + (pic_rect.height() - scaled.height()) // 2,
+                        scaled)
+        else:
+            p.fillRect(pic_rect, QColor(242, 242, 242))
+            p.setPen(QColor(150, 150, 150))
+            p.setFont(small)
+            p.drawText(pic_rect, Qt.AlignCenter, "no preview")
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(30, 30, 30))
+        p.drawEllipse(QRectF(x + 8, y + 8, 30, 30))
+        p.setPen(QColor(255, 255, 255))
+        p.setFont(badge)
+        p.drawText(QRectF(x + 8, y + 8, 30, 30), Qt.AlignCenter,
+                   str(r.get("n", i + 1)))
+        tw = cw - 2 * pad
+        ty = y + pad + 170
+        lines = [(bold, QColor(20, 20, 20), r.get("name", "")),
+                 (small, QColor(110, 110, 110),
+                  r.get("name_en", "") if _fold(r.get("name_en"))
+                  != _fold(r.get("name")) else ""),
+                 (base, QColor(40, 40, 40), _size_label(r.get("size_cm"))),
+                 (small, QColor(110, 110, 110), r.get("licence", "")
+                  if r.get("source") == "library" else "")]
+        for font, colour, text in lines:
+            if not text:
+                continue
+            p.setFont(font)
+            p.setPen(colour)
+            text = p.fontMetrics().elidedText(str(text), Qt.ElideRight, tw)
+            p.drawText(QRect(x + pad, ty, tw, 18),
+                       Qt.AlignHCenter | Qt.AlignVCenter, text)
+            ty += 18
+    p.end()
+    path = Path(path)
+    if not img.save(str(path), "PNG"):
+        raise OSError(f"cannot write {path}")
+    return path
 
 
 class ImportStep(Command):

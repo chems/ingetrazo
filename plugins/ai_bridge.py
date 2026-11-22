@@ -433,10 +433,13 @@ class _Bridge(QObject):
 
     # ---- Components and 3D models -------------------------------------------
     def _tool_search_components(self, query: str = "", category=None,
-                                limit: int = 20, size_cm=None) -> dict:
+                                limit: int = 20, size_cm=None,
+                                preview: bool = False,
+                                sheet_path=None) -> dict:
         from core.agent_tools import search_components
         return search_components(query, category=category, limit=limit,
-                                 size_cm=size_cm)
+                                 size_cm=size_cm, preview=preview,
+                                 sheet_path=sheet_path)
 
     def _tool_insert_component(self, id=None, query=None,
                                position=(0, 0, 0), rotation=0.0, name=None,

@@ -263,14 +263,26 @@ TOOLS = [
             "Cuarto de Baño, Oficina, Iluminación, Exterior, Puertas y "
             "Ventanas…) and the bundled starters. Every word of query "
             "must match; size_cm [w, d, h] (nulls allowed) ranks the "
-            "closest first. Returns id, name, name_en, category, size_cm, "
-            "licence, author."),
+            "closest first. Returns n (number), id, name, name_en, "
+            "category, size_cm [w, d, h], licence, author. preview true "
+            "also returns a numbered contact sheet of the first 12 "
+            "(picture, name, size, licence) as an image, and each "
+            "result's thumbnail path; sheet_path saves that sheet as a PNG "
+            "where you say (e.g. the project folder) so the person can see "
+            "it and choose by number."),
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string"},
             "category": {"type": "string"},
             "limit": {"type": "integer"},
             "size_cm": {"type": "array",
-                        "items": {"type": ["number", "null"]}}}},
+                        "items": {"type": ["number", "null"]}},
+            "preview": {"type": "boolean",
+                        "description": "Contact sheet of the candidates "
+                                       "(pictures), for choosing."},
+            "sheet_path": {"type": "string",
+                           "description": "Absolute .png path on the "
+                                          "IngeTrazo machine to keep the "
+                                          "sheet (implies preview)."}}},
     },
     {
         "name": "insert_component",
@@ -436,6 +448,17 @@ def _call(name: str, args: dict) -> dict:
         except OSError as exc:
             return _tool_result(f"screenshot unreadable: {exc}",
                                 is_error=True)
+    if name == "search_components" and result.get("sheet"):
+        content = [{"type": "text",
+                    "text": json.dumps(result, indent=2, ensure_ascii=False)}]
+        try:
+            with open(result["sheet"], "rb") as fh:
+                content.append({"type": "image",
+                                "data": base64.b64encode(fh.read()).decode(),
+                                "mimeType": "image/png"})
+        except OSError:
+            pass
+        return {"content": content, "isError": False}
     if name == "run_python":
         parts = []
         if result.get("stdout"):

@@ -38,7 +38,24 @@ IFC_CLASSES = [
     "IfcRoof", "IfcStair", "IfcRamp", "IfcDoor", "IfcWindow",
     "IfcRailing", "IfcCovering", "IfcPile", "IfcMember", "IfcSpace",
     "IfcReinforcingBar",
+] + [
+    # Furniture and building services (fork mcp-agent): the components an
+    # interior is furnished with. IFC4 entities of nine attributes, the
+    # last an optional PredefinedType — written like a proxy, but under
+    # their own class, so a viewer or a coordination tool knows a bed from
+    # a wall. Counted by the unit.
+    "IfcFurniture", "IfcSanitaryTerminal", "IfcSpaceHeater",
+    "IfcLightFixture", "IfcOutlet", "IfcSwitchingDevice", "IfcAirTerminal",
+    "IfcElectricAppliance", "IfcElectricDistributionBoard",
 ]
+
+#: The counted equipment classes above: measured by their box and billed
+#: per piece.
+EQUIPMENT_CLASSES = (
+    "IfcFurniture", "IfcSanitaryTerminal", "IfcSpaceHeater",
+    "IfcLightFixture", "IfcOutlet", "IfcSwitchingDevice", "IfcAirTerminal",
+    "IfcElectricAppliance", "IfcElectricDistributionBoard",
+)
 
 #: Density of reinforcing steel, kg/m³ — the bar's weight is its volume
 #: times this, as a takeoff bills it.
@@ -387,6 +404,7 @@ METRADO_UNIT = {
     "IfcPile": "m", "IfcMember": "m", "IfcRailing": "m",
     "IfcDoor": "und", "IfcWindow": "und",
     "IfcReinforcingBar": "kg",
+    **{c: "und" for c in EQUIPMENT_CLASSES},
 }
 
 
@@ -537,6 +555,14 @@ def class_quantities(ifc_class: str, faces):
         add("length", "Width", width)
         add("length", "Height", height)
         add("area", "Area", face_net_area(big))
+        metrado = 1.0
+    elif ifc_class in EQUIPMENT_CLASSES:
+        # A piece of furniture or equipment: its overall box, its volume
+        # when it is closed, and one unit.
+        add("length", "Width", dx)
+        add("length", "Depth", dy)
+        add("length", "Height", dz)
+        add("volume", "GrossVolume", volume)
         metrado = 1.0
     elif ifc_class == "IfcSpace":
         floor = max((face_net_area(f) for f in faces

@@ -47,6 +47,19 @@ Rien de ceci n'est publié sur le dépôt d'origine.
     sur une matière nommée, et `{"name": …}` seul applique une matière du
     document. La finition pilote le rendu Blender ; sans elle, IngeTrazo
     la devine des noms espagnols, anglais ou portugais seulement.
+- **Lot 3 — choisir son modèle sur image** :
+  - `search_components` numérote ses résultats (`n`) et, avec `preview`
+    ou `sheet_path`, renvoie la vignette de chacun des 12 premiers et une
+    planche numérotée (image, nom, dimensions l × p × h, licence) : le
+    client MCP la joint comme image, `sheet_path` l'enregistre en PNG
+    (dossier du projet) pour que la personne choisisse par numéro ;
+  - **classes IFC du mobilier et des équipements** : IfcFurniture,
+    IfcSanitaryTerminal, IfcSpaceHeater, IfcLightFixture, IfcOutlet,
+    IfcSwitchingDevice, IfcAirTerminal, IfcElectricAppliance et
+    IfcElectricDistributionBoard s'exportent sous leur propre classe IFC4
+    (au lieu d'IfcBuildingElementProxy), avec leurs dimensions
+    (Width, Depth, Height, GrossVolume) et un métré à l'unité (`und`) ;
+    elles apparaissent aussi dans la liste de classes du panneau BIM.
 
 ### Corrigé
 
@@ -96,12 +109,20 @@ Rien de ceci n'est publié sur le dépôt d'origine.
 - `build-windows.yml` se lance aussi sur les pushs de la branche
   `mcp-agent` et publie l'artefact `ingetrazo-windows` (zip portable +
   installeur), sans signature ni release.
+- L'étape de tests installe `ifcopenshell` (outil de test seulement, jamais
+  embarqué) pour valider l'IFC contre le schéma IFC4.
 
 ### Tests
 
 - `tests/test_mcp_agent_components.py` (lot 2) : recherche, insertion à
   taille réelle et partage de définition sur une bibliothèque publiée sur
-  disque, imports GLB/OBJ/IGZ, finitions jusque dans le GLB du rendu.
+  disque, imports GLB/OBJ/IGZ, finitions jusque dans le GLB du rendu ;
+  lot 3 : planche numérotée (vignettes de la bibliothèque et des modèles
+  fournis, case « no preview », dossier absent refusé, image jointe par le
+  client).
+- `tests/test_ifc_validation.py` : les classes d'équipement passent la
+  validation IFC4 d'ifcopenshell, sous leur propre classe, dans le niveau,
+  avec leurs quantités.
 - `tests/test_mcp_agent_tools.py` : un ou plusieurs tests par point
   (fichiers, rendu avec un faux Blender, DXF, peinture, lumières, UTF-8,
   personnage caché — test GL, ignoré sans contexte OpenGL —, query_model,

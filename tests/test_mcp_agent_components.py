@@ -341,6 +341,7 @@ def test_ifc_and_csv_take_a_component_with_its_parts_where_it_stands(
     out = _ok(_ask(bridge, "export_ifc", {"path": str(tmp_path / "m.ifc")}))
     text = Path(out["path"]).read_text("ascii")
     assert out["elements"] == 1 and "'Meuble'" in text
+    assert "IFCFURNITURE(" in text and "IFCBUILDINGELEMENTPROXY" not in text
     # Its points are in world space: around x = 20, y = 30 — not at the
     # parts' local origin.
     import re
@@ -350,4 +351,79 @@ def test_ifc_and_csv_take_a_component_with_its_parts_where_it_stands(
     csv = _ok(_ask(bridge, "quantities_csv", {"path": str(tmp_path / "q.csv")}))
     line = [l for l in Path(csv["path"]).read_text("utf-8").splitlines()
             if "Meuble" in l][0]
-    assert line.split(",")[2] != ""          # the metrado is measured
+    assert line.split(",")[2:4] == ["1.0000", "und"]   # one piece
+
+
+# ---- Lot 3: choosing a model from its picture ----------------------------------
+
+def _thumb(path: Path, rgb) -> Path:
+    from PySide6.QtGui import QColor, QImage
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = QImage(128, 128, QImage.Format_RGB32)
+    img.fill(QColor(*rgb))
+    img.save(str(path))
+    return path
+
+
+def test_search_preview_draws_a_numbered_contact_sheet(win, bridge,
+                                                       library_on_disk,
+                                                       tmp_path):
+    from PySide6.QtGui import QImage
+    _thumb(library_on_disk / "miniaturas" / "cama-doble.png", (200, 40, 40))
+    out = tmp_path / "choix-lit.png"
+    res = _ok(_ask(bridge, "search_components",
+                   {"query": "cama", "size_cm": [160, 200, None],
+                    "sheet_path": str(out)}))
+    assert [r["n"] for r in res["results"]] == [1, 2]
+    assert res["sheet"] == str(out) and res["sheet_count"] == 2
+    first, second = res["results"]
+    assert first["id"] == "cama-doble" and Path(first["thumbnail"]).is_file()
+    assert second["thumbnail"] is None and res["without_picture"] == [2]
+    img = QImage(str(out))
+    assert (img.width(), img.height()) == (2 * 210, 250)
+    # The first cell shows the model's picture, the second says it has none.
+    c = img.pixelColor(105, 120)
+    assert (c.red(), c.green(), c.blue()) == (200, 40, 40)
+    c = img.pixelColor(210 + 105, 120)
+    assert c.red() == c.green() == c.blue() != 255
+
+
+def test_search_preview_shows_the_bundled_pictures(win, bridge, monkeypatch,
+                                                   tmp_path):
+    monkeypatch.setenv("INGETRAZO_LIBRARY", str(tmp_path / "offline"))
+    res = _ok(_ask(bridge, "search_components",
+                   {"query": "sofa", "preview": True}))
+    assert res["results"][0]["id"] == "bundled:sofa"
+    assert Path(res["results"][0]["thumbnail"]).name == "sofa.png"
+    assert Path(res["sheet"]).is_file() and res["without_picture"] == []
+
+
+def test_search_without_preview_draws_nothing(win, bridge, library_on_disk):
+    res = _ok(_ask(bridge, "search_components", {"query": "radiador"}))
+    assert "sheet" not in res and "thumbnail" not in res["results"][0]
+    assert res["results"][0]["n"] == 1
+
+
+def test_search_sheet_path_in_a_missing_folder_is_refused(win, bridge,
+                                                          library_on_disk,
+                                                          tmp_path):
+    reply = _ask(bridge, "search_components",
+                 {"query": "cama", "sheet_path": str(tmp_path / "nope" / "a")})
+    assert not reply["ok"] and "folder does not exist" in reply["error"]
+
+
+def test_client_returns_the_sheet_as_an_image(monkeypatch, tmp_path):
+    import ingetrazo_mcp as client
+    sheet = _thumb(tmp_path / "s.png", (10, 20, 30))
+
+    def fake_bridge(name, args):
+        assert name == "search_components" and args["preview"] is True
+        return {"ok": True, "result": {"total": 1, "sheet": str(sheet),
+                                       "results": [{"n": 1, "id": "x"}]}}
+    monkeypatch.setattr(client, "_bridge", fake_bridge)
+    res = client._call("search_components", {"query": "x", "preview": True})
+    kinds = [c["type"] for c in res["content"]]
+    assert kinds == ["text", "image"] and not res["isError"]
+    assert '"n": 1' in res["content"][0]["text"]
+    spec = next(t for t in client.TOOLS if t["name"] == "search_components")
+    assert {"preview", "sheet_path"} <= set(spec["inputSchema"]["properties"])

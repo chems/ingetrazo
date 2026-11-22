@@ -140,3 +140,38 @@ def test_geometry_tessellates_with_real_kernel(exported):
             assert abs(max(zs) - 2.6) < 1e-6        # world metres survive
         if e.is_a("IfcColumn"):
             assert abs(max(zs) - 3.0) < 1e-6
+
+
+def test_equipment_classes_export_under_their_own_class(tmp_path):
+    """Fork mcp-agent: furniture and building services keep their IFC4
+    class (not IfcBuildingElementProxy), validate against the schema, sit
+    in the storey and carry their box and one unit."""
+    from core.bim import EQUIPMENT_CLASSES, class_quantities
+    scene = Scene()
+    vp = _Vp(scene)
+    for i, cls in enumerate(EQUIPMENT_CLASSES):
+        x = 2.0 * i
+        n0 = len(scene.mesh.faces)
+        _extrude(scene, vp, [V(x, 0), V(x + 1.6, 0), V(x + 1.6, 2.0),
+                             V(x, 2.0)], 0.5)
+        vp.history.execute(MakeGroupCommand(scene.mesh.faces[n0:], []))
+        tag_group(scene.groups[-1], cls, "Élément %s" % cls)
+    path = tmp_path / "equipements.ifc"
+    assert save_ifc(scene, path) == len(EQUIPMENT_CLASSES)
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(str(path), logger)
+    assert logger.statements == []
+    f = ifcopenshell.open(str(path))
+    assert not f.by_type("IfcBuildingElementProxy")
+    for cls in EQUIPMENT_CLASSES:
+        (elem,) = [e for e in f.by_type(cls) if e.is_a() == cls]
+        assert elem.Name == "Élément %s" % cls
+        assert ifcopenshell.util.element.get_container(elem).is_a(
+            "IfcBuildingStorey")
+        q = ifcopenshell.util.element.get_psets(elem, qtos_only=True)
+        q = q["BaseQuantities"]
+        assert abs(q["Width"] - 1.6) < 1e-4 and abs(q["Height"] - 0.5) < 1e-4
+        assert abs(q["GrossVolume"] - 1.6) < 1e-4
+    group = scene.groups[0]
+    _q, _e, metrado = class_quantities("IfcFurniture", group.mesh.faces)
+    assert metrado == (1.0, "und")
