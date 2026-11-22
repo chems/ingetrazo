@@ -431,6 +431,19 @@ class _Bridge(QObject):
         from core.agent_tools import remove_light
         return remove_light(self._viewport, index=index, name=name)
 
+    def _tool_set_sun(self, month=None, day=None, hour=None, minute=None,
+                      utc_offset=None, timezone=None, lat=None, lon=None,
+                      north_deg=None, scenes="all") -> dict:
+        from core.agent_tools import set_sun
+        return set_sun(self._viewport, month=month, day=day, hour=hour,
+                       minute=minute, utc_offset=utc_offset,
+                       timezone=timezone, lat=lat, lon=lon,
+                       north_deg=north_deg, scenes=scenes)
+
+    def _tool_sun(self) -> dict:
+        from core.agent_tools import sun_report
+        return sun_report(self._viewport.scene)
+
     # ---- Components and 3D models -------------------------------------------
     def _tool_search_components(self, query: str = "", category=None,
                                 limit: int = 20, size_cm=None,
@@ -469,7 +482,7 @@ class _Bridge(QObject):
 
     def _tool_render_start(self, path: str, scene=None, engine="eevee",
                            width=1600, height=900, quality=1, ground=True,
-                           blender=None) -> dict:
+                           blender=None, keep_sun=False) -> dict:
         from core.agent_tools import fresh_view
         vp = self._viewport
         vp.end_group_edit()
@@ -477,7 +490,8 @@ class _Bridge(QObject):
         return self._renders().start(vp, path, scene_name=scene,
                                      engine=engine, width=width,
                                      height=height, quality=quality,
-                                     ground=ground, blender=blender)
+                                     ground=ground, blender=blender,
+                                     keep_sun=bool(keep_sun))
 
     def _tool_render_status(self, job) -> dict:
         return self._renders().status(job)

@@ -138,7 +138,12 @@ Dedicated tools (prefer them to run_python): save(path .igz), open(path), \
 import_dxf(path, units, create_faces) -> groups created, export_ifc(path), \
 quantities_csv(path), paint(target, material, faces), add_light / \
 list_lights / remove_light (Blender render lights, Render panel), \
-render(path, scene, engine, width, height, quality) -> waits for the PNG, \
+render(path, scene, engine, width, height, quality, keep_sun) -> waits for \
+the PNG and reports the sun used, set_sun(month, day, hour, minute, \
+timezone or utc_offset, lat, lon, north_deg, scenes) -> the sun of shadows \
+and renders, in the saved scenes too (a scene puts back the sun it \
+remembers when recalled; without lat/lon the site is Arequipa, Peru), \
+sun() -> where it stands, \
 query_model(offset, limit) -> counts incl. groups, paged names, \
 search_components(query, category, size_cm, preview, sheet_path) + insert_component(id, \
 position, rotation) -> real-size library models (names in Spanish/English: \

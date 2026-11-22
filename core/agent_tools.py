@@ -554,6 +554,185 @@ def remove_light(viewport, index=None, name=None) -> dict:
     return {"removed": dict(gone, index=index), "left": len(lights)}
 
 
+# ---- Sun and site for shadows and the Blender render ---------------------------
+
+def sun_report(scene) -> dict:
+    """Where the sun of the Shadows panel stands: the site it is computed
+    for (the model's location, or IngeTrazo's default site), the local date
+    and time, the UTC offset, and the sun's elevation and azimuth (true
+    azimuth, degrees clockwise from north)."""
+    import datetime as _dt
+    from core import sun
+    sh = getattr(scene, "shadows", None) or sun.ShadowSettings()
+    datum = getattr(scene, "georef", None)
+    lat = getattr(datum, "lat", None)
+    lon = getattr(datum, "lon", None)
+    default = lat is None or lon is None
+    if default:
+        lat, lon = sun.DEFAULT_LAT, sun.DEFAULT_LON
+    off = sh.utc_offset if sh.utc_offset is not None else sun.default_utc_offset(lon)
+    rep = {"site": {"lat": round(lat, 5), "lon": round(lon, 5),
+                    "default": default,
+                    "north_deg": round(sun.scene_north_deg(scene), 2)},
+           "date": "%02d/%02d" % (sh.day, sh.month),
+           "time": "%02d:%02d" % (sh.hour, sh.minute),
+           "utc_offset": off}
+    if default:
+        rep["site"]["name"] = "Arequipa (site par défaut d'IngeTrazo)"
+        rep["warning"] = ("The model has no location: the sun is computed for "
+                          "IngeTrazo's default site (Arequipa, Peru). Give the "
+                          "real site with set_sun(lat, lon, ...) for a true "
+                          "date and hour.")
+    try:
+        el, az = sun.solar_position(lat, lon, sh.when_utc(
+            lon, year=_dt.date.today().year))
+        rep["elevation_deg"] = round(el, 1)
+        rep["azimuth_deg"] = round(az, 1)
+        rep["night"] = el <= 0
+    except ValueError:
+        rep["night"] = None
+    return rep
+
+
+def _sun_clock(raw: dict) -> tuple:
+    return tuple(raw.get(k) for k in ("month", "day", "hour", "minute",
+                                      "utc_offset"))
+
+
+class SetSunCommand(Command):
+    """The sun's date and time, the site, and the same date and time in the
+    saved scenes — one undo step. A scene remembers its shadow settings
+    (on/off, date, time); recalling it puts them back, so a sun set on the
+    document alone fell back to the scene's hour (often noon) at the first
+    scene a render applied (salon d'exercice, 22/11/2026)."""
+
+    def __init__(self, clock: dict, datum=None, views=()) -> None:
+        self.clock = dict(clock)          # month/day/hour/minute/utc_offset
+        self.datum = datum                # a SceneDatum, or None = unchanged
+        self.views = list(views)
+        self._old_shadows = None
+        self._old_datum = None
+        self._old_views = []
+
+    def do(self, scene) -> None:
+        from core.saved_views import apply_shadow_state
+        self._old_shadows = scene.shadows.to_dict()
+        self._old_shadows["utc_offset"] = scene.shadows.utc_offset
+        new = dict(self._old_shadows)
+        new.update({k: v for k, v in self.clock.items()})
+        apply_shadow_state(scene, new)
+        scene.shadows.utc_offset = new.get("utc_offset")
+        if self.datum is not None:
+            self._old_datum = scene.georef
+            scene.georef = self.datum
+        self._old_views = []
+        for v in self.views:
+            self._old_views.append((v, dict(v.shadows) if v.shadows else None))
+            base = dict(v.shadows) if v.shadows else scene.shadows.to_dict()
+            for k, val in self.clock.items():
+                if val is None:
+                    base.pop(k, None)
+                else:
+                    base[k] = val
+            v.shadows = base
+        scene.version += 1
+
+    def undo(self, scene) -> None:
+        from core.saved_views import apply_shadow_state
+        apply_shadow_state(scene, self._old_shadows)
+        scene.shadows.utc_offset = self._old_shadows.get("utc_offset")
+        if self.datum is not None:
+            scene.georef = self._old_datum
+        for v, old in self._old_views:
+            v.shadows = old
+        scene.version += 1
+
+
+def _utc_offset_for(tz_name: str, month: int, day: int):
+    """The UTC offset (hours) of the IANA zone ``tz_name`` on that date —
+    summer time included. None when this Python has no zone data."""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo(str(tz_name))
+    except Exception:  # noqa: BLE001 — no tzdata in this build
+        return None
+    when = _dt.datetime(_dt.date.today().year, month, day, 12, tzinfo=zone)
+    off = when.utcoffset()
+    return None if off is None else off.total_seconds() / 3600.0
+
+
+def set_sun(viewport, month=None, day=None, hour=None, minute=None,
+            utc_offset=None, timezone=None, lat=None, lon=None,
+            north_deg=None, scenes="all") -> dict:
+    """Set the sun of the Shadows panel (and of the Blender render): local
+    date and time, optionally the site (``lat``/``lon``, WGS84; ``north_deg``
+    where true north lies, clockwise from the green axis) and the UTC offset
+    (``utc_offset`` hours, or an IANA ``timezone`` such as
+    "Europe/Brussels" that also handles summer time). ``scenes``: "all"
+    (default) gives every saved scene the same date and time, a list of
+    scene names only those, "none" the document alone. One undo step.
+    Returns :func:`sun_report` and the scenes changed."""
+    from core import sun
+    scene = viewport.scene
+    sh = scene.shadows
+    m = int(month if month is not None else sh.month)
+    d = int(day if day is not None else sh.day)
+    h = int(hour if hour is not None else sh.hour)
+    mi = int(minute if minute is not None else sh.minute)
+    if not (1 <= m <= 12 and 1 <= d <= 31 and 0 <= h <= 23 and 0 <= mi <= 59):
+        raise ValueError("month 1-12, day 1-31, hour 0-23, minute 0-59")
+    datum = None
+    if (lat is None) != (lon is None):
+        raise ValueError("give lat and lon together")
+    if lat is not None:
+        lat, lon = float(lat), float(lon)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("lat -90..90, lon -180..180")
+        from georef.datum import SceneDatum
+        old = getattr(scene, "georef", None)
+        north = (float(north_deg) if north_deg is not None
+                 else sun.scene_north_deg(scene))
+        datum = SceneDatum(lat, lon, alt=getattr(old, "alt", 0.0) or 0.0,
+                           north=north)
+    elif north_deg is not None:
+        raise ValueError("north_deg goes with lat/lon here; without a site "
+                         "use Tools ▸ North")
+    off = sh.utc_offset
+    if timezone:
+        off = _utc_offset_for(timezone, m, d)
+        if off is None:
+            raise ValueError(f"unknown time zone {timezone!r} (or no zone "
+                             "data here): give utc_offset in hours")
+    elif utc_offset is not None:
+        off = float(utc_offset)
+    if off is not None:
+        if not -14 <= off <= 14:
+            raise ValueError("utc_offset is -14..14 hours")
+        off = int(off) if float(off).is_integer() else off
+    views = list(getattr(scene, "saved_views", []) or [])
+    if scenes in (None, "none", [], False):
+        views = []
+    elif scenes != "all":
+        want = {norm(n) for n in (scenes if isinstance(scenes, (list, tuple))
+                                  else [scenes])}
+        hits = [v for v in views if norm(v.name) in want]
+        missing = want - {norm(v.name) for v in hits}
+        if missing:
+            raise ValueError(f"no scene named {sorted(missing)}. Scenes: "
+                             f"{[norm(v.name) for v in views]}")
+        views = hits
+    clock = {"month": m, "day": d, "hour": h, "minute": mi, "utc_offset": off}
+    hist = viewport.history
+    hist.execute(SetSunCommand(clock, datum, views))
+    if hist.last_error:
+        raise RuntimeError(hist.last_error)
+    _refresh(viewport)
+    rep = sun_report(scene)
+    rep["scenes_set"] = [norm(v.name) for v in views]
+    return rep
+
+
 # ---- DXF -----------------------------------------------------------------------
 
 def import_dxf(viewport, path, units: str = "auto", create_faces: bool = False,
@@ -685,7 +864,7 @@ class RenderJobs:
 
     def start(self, viewport, path, scene_name=None, engine="eevee",
               width=1600, height=900, quality=1, ground=True,
-              blender=None) -> dict:
+              blender=None, keep_sun=False) -> dict:
         import subprocess
         import time
         from core import render_blender as rb
@@ -703,6 +882,7 @@ class RenderJobs:
                 "panel (Render tab ▸ Blender…).")
         scene = viewport.scene
         applied = None
+        notes: list = []
         if scene_name:
             views = [v for v in getattr(scene, "saved_views", []) or []
                      if norm(v.name) == norm(scene_name)]
@@ -710,10 +890,37 @@ class RenderJobs:
                 names = [norm(v.name) for v in scene.saved_views]
                 raise ValueError(f"no scene named {norm(scene_name)!r}. "
                                  f"Scenes: {names}")
+            before = scene.shadows.to_dict()
+            before["utc_offset"] = scene.shadows.utc_offset
             views[0].apply(scene, viewport.camera)
+            after = scene.shadows.to_dict()
+            after["utc_offset"] = scene.shadows.utc_offset
+            if _sun_clock(after) != _sun_clock(before):
+                if keep_sun:
+                    from core.saved_views import apply_shadow_state
+                    apply_shadow_state(scene, before)
+                    scene.shadows.utc_offset = before.get("utc_offset")
+                    notes.append("kept the document's sun (%02d/%02d %02d:%02d)"
+                                 " instead of the scene's (%02d/%02d %02d:%02d)"
+                                 % (before["day"], before["month"],
+                                    before["hour"], before["minute"],
+                                    after["day"], after["month"],
+                                    after["hour"], after["minute"]))
+                else:
+                    notes.append(
+                        "scene %r put back the sun it remembers (%02d/%02d "
+                        "%02d:%02d) instead of %02d/%02d %02d:%02d: give "
+                        "keep_sun true, or set_sun(..., scenes='all') to "
+                        "set every scene" % (
+                            norm(views[0].name), after["day"], after["month"],
+                            after["hour"], after["minute"], before["day"],
+                            before["month"], before["hour"], before["minute"]))
             _refresh(viewport)
             applied = norm(views[0].name)
         st = render_state(scene)
+        sun_now = sun_report(scene)
+        if st["ambience"] == "day" and sun_now.get("warning"):
+            notes.append(sun_now["warning"])
         work = rb.work_base() / time.strftime("agent-%Y%m%d-%H%M%S")
         n = 1
         while work.exists():
@@ -738,10 +945,16 @@ class RenderJobs:
         self.jobs[jid] = {"proc": proc, "log": log, "work": work, "out": out,
                           "started": time.time(), "engine": engine,
                           "scene": applied}
-        return {"job": jid, "work": str(work), "blender": found.where,
-                "engine": engine, "width": width, "height": height,
-                "scene": applied, "lights": sum(1 for lt in st["lights"]
-                                                if lt["on"])}
+        res = {"job": jid, "work": str(work), "blender": found.where,
+               "engine": engine, "width": width, "height": height,
+               "scene": applied, "lights": sum(1 for lt in st["lights"]
+                                               if lt["on"]),
+               "ambience": st["ambience"]}
+        if st["ambience"] == "day":
+            res["sun"] = {k: v for k, v in sun_now.items() if k != "warning"}
+        if notes:
+            res["warnings"] = notes
+        return res
 
     def status(self, job) -> dict:
         import shutil

@@ -82,6 +82,35 @@ def _ripples(mat, bsdf, scale=6.0, strength=0.12):
     links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
 
 
+def _clear_shadows(mat):
+    """Let light through a glass pane: shadow rays see a Transparent BSDF,
+    camera and reflection rays the real glass. Without it a window stops
+    the sun — EEVEE treats a refractive surface as opaque in its shadow
+    maps, Cycles lets through only noisy caustics — and a room lit by a
+    low sun stays dark behind its glazing (salon d'exercice, 22/11/2026)."""
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    out = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"
+                and getattr(n, "is_active_output", True)), None)
+    if out is None or not out.inputs["Surface"].links:
+        return False
+    surface = out.inputs["Surface"].links[0].from_socket
+    path = nodes.new("ShaderNodeLightPath")
+    clear = nodes.new("ShaderNodeBsdfTransparent")
+    mix = nodes.new("ShaderNodeMixShader")
+    links.new(path.outputs["Is Shadow Ray"], mix.inputs["Fac"])
+    links.new(surface, mix.inputs[1])
+    links.new(clear.outputs["BSDF"], mix.inputs[2])
+    links.new(mix.outputs["Shader"], out.inputs["Surface"])
+    if hasattr(mat, "use_transparent_shadow"):
+        mat.use_transparent_shadow = True          # EEVEE (Next) shadow maps
+    if hasattr(mat, "shadow_method"):              # legacy EEVEE (< 4.2)
+        try:
+            mat.shadow_method = "HASHED"
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
 def apply_finishes():
     """Turn IngeTrazo's finish (glTF extras, core.finish) into a real
     material: the importer keeps extras as custom properties."""
@@ -125,6 +154,7 @@ def apply_finishes():
                             setattr(mat, attr, value)
                         except (TypeError, ValueError):
                             pass
+                _clear_shadows(mat)
             else:
                 _ripples(mat, bsdf)
     if counts:

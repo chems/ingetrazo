@@ -144,6 +144,15 @@ hiddenimports += ['manifold3d', 'core.solids', 'tools.solid_tools']
 # verifier; imported inside core.tls.https_context, and without it the
 # extension manager silently falls back to Python's own store.
 hiddenimports += ['truststore']
+# Time zones for the sun (fork mcp-agent: set_sun(timezone="Europe/Brussels")):
+# zoneinfo reads the tzdata package on Windows, which has no system zone
+# database. Shipped when the build environment has it; without it set_sun
+# asks for a UTC offset instead.
+import importlib.util as _ilu
+if _ilu.find_spec('tzdata') is not None:
+    from PyInstaller.utils.hooks import collect_data_files
+    hiddenimports += collect_submodules('tzdata')
+    datas += collect_data_files('tzdata')
 # Copy/Paste between windows (#76): imported lazily by the viewport and
 # the main window.
 hiddenimports += ['formats.clip']

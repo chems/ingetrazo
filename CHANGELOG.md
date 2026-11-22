@@ -74,8 +74,38 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   « nom (2) » ; l'annulation d'un import (`SnapshotImport`) retire aussi les
   matériaux qu'il a ajoutés.
 
+- **`set_sun(month, day, hour, minute, utc_offset | timezone, lat, lon,
+  north_deg, scenes)`** et **`sun()`** : le soleil des ombres et du rendu
+  Blender en une étape d'annulation, avec le lieu du projet (point
+  géographique du modèle) et le fuseau (`timezone` IANA, heure d'été
+  comprise, quand Python a les données de fuseaux). Par défaut la même date
+  et la même heure vont aussi dans toutes les scènes enregistrées
+  (`scenes: "all"`, une liste de noms, ou `"none"`). Le rapport donne le
+  site (avec `default: true` et un avertissement sans lieu : soleil calculé
+  pour Arequipa), la date, l'heure, le décalage UTC, la hauteur et l'azimut
+  du soleil.
+- `render(…, keep_sun)` : avec une scène, garde le soleil du document au
+  lieu de l'heure mémorisée par la scène. Le résultat de `render` donne le
+  soleil utilisé et des avertissements (scène qui a remis son heure, site
+  par défaut).
+
 ### Corrigé
 
+- **Soleil d'une série de rendus** (constaté le 22-11-2026 sur le séjour
+  d'exercice) : une scène enregistrée garde son heure de soleil et la remet
+  quand on l'active ; un soleil réglé sur le document seul repartait donc à
+  midi au premier `render(scene=…)`, sans le dire. `set_sun` règle les
+  scènes en même temps et `render` signale l'écart (ou le corrige avec
+  `keep_sun`). Le comportement des scènes reste celui d'origine.
+- **Le verre arrêtait le soleil dans le rendu Blender** : une vitre en
+  finition `glass` (transmission) bloquait toute la lumière du soleil dans
+  EEVEE (cartes d'ombre opaques) et ne laissait passer que des caustiques
+  bruitées dans Cycles ; un séjour éclairé par un soleil bas restait sombre
+  derrière sa baie. `resources/blender/render_scene.py` montre maintenant
+  une surface transparente aux rayons d'ombre (Light Path « Is Shadow Ray »
+  → Transparent BSDF, ombres transparentes activées) et le verre réel à la
+  caméra et aux reflets. Mesure sur une pièce d'essai (moyenne du sol
+  éclairé) : EEVEE 0,589 → 0,688, identique à la pièce sans vitre (0,688).
 - **Registre des matériaux** : `core.materials.register` gardait la
   finition d'un matériau renommé « nom (2) » ; elle était perdue.
 - **Encodage** : le client MCP lit et écrit en UTF-8 quel que soit le code de
@@ -124,6 +154,9 @@ Rien de ceci n'est publié sur le dépôt d'origine.
 - `build-windows.yml` se lance aussi sur les pushs de la branche
   `mcp-agent` et publie l'artefact `ingetrazo-windows` (zip portable +
   installeur), sans signature ni release.
+- `tzdata` est installé et embarqué (spec PyInstaller) : `set_sun(timezone=…)`
+  connaît les fuseaux et l'heure d'été sous Windows, qui n'a pas de base de
+  fuseaux pour Python.
 - L'étape de tests installe `ifcopenshell` (outil de test seulement, jamais
   embarqué) pour valider l'IFC contre le schéma IFC4.
 
@@ -140,6 +173,12 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   `import_model` et par le menu Fichier avec annulation et rétablissement,
   import raté sans reste, finitions jusque dans le GLB du rendu Blender,
   lecteurs à trois valeurs intacts (échouent tous sans le correctif).
+- `tests/test_mcp_agent_sun.py` : `set_sun` sur le document et les scènes
+  (une annulation), scènes choisies ou laissées, lieu et rapport du soleil
+  (Bruxelles, 21 juin, 21 h), fuseau avec heure d'été, refus des valeurs
+  absurdes ; `render` qui signale une scène revenue à midi, `keep_sun`,
+  site par défaut signalé ; nœuds du verre transparents aux rayons d'ombre
+  (avec le module `bpy`, ignoré sinon).
 - `tests/test_ifc_validation.py` : les classes d'équipement passent la
   validation IFC4 d'ifcopenshell, sous leur propre classe, dans le niveau,
   avec leurs quantités.

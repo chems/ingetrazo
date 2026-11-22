@@ -14,8 +14,8 @@ Register it with Claude Code:
 Tools: run_python (transactional, one undo step per call), query_model,
 screenshot (the agent SEES the viewport), undo, redo — and, in the
 chems/ingetrazo «mcp-agent» fork: save, open, export_ifc, quantities_csv,
-render (Blender, waited for), import_dxf, paint, add_light, list_lights,
-remove_light, search_components, insert_component, import_model. Every mutation goes through IngeTrazo's command engine — the
+render (Blender, waited for), set_sun, sun, import_dxf, paint, add_light,
+list_lights, remove_light, search_components, insert_component, import_model. Every mutation goes through IngeTrazo's command engine — the
 hermeticity guard validates the agent's recipes, and Ctrl+Z always works.
 
 Text is UTF-8 both ways, whatever the console code page: on Windows a
@@ -242,6 +242,35 @@ TOOLS = [
             "required": ["position"]},
     },
     {
+        "name": "set_sun",
+        "description": (
+            "Set the sun for shadows and the Blender render — one undo step. "
+            "Local month/day/hour/minute; site lat/lon (WGS84) with "
+            "north_deg (true north, ° clockwise from the green axis); "
+            "utc_offset hours or timezone (IANA, e.g. Europe/Brussels, "
+            "summer time included). scenes: 'all' (default) gives every "
+            "saved scene the same date and time (a scene puts back the sun "
+            "it remembers when recalled), a list of scene names, or 'none'. "
+            "Without lat/lon the sun is computed for IngeTrazo's default "
+            "site (Arequipa, Peru). Returns site, date, time, elevation and "
+            "azimuth of the sun, scenes set."),
+        "inputSchema": {"type": "object", "properties": {
+            "month": {"type": "integer"}, "day": {"type": "integer"},
+            "hour": {"type": "integer"}, "minute": {"type": "integer"},
+            "utc_offset": {"type": "number"},
+            "timezone": {"type": "string"},
+            "lat": {"type": "number"}, "lon": {"type": "number"},
+            "north_deg": {"type": "number"},
+            "scenes": {"description": "'all', 'none' or [scene names]"}}},
+    },
+    {
+        "name": "sun",
+        "description": ("Where the sun stands now: site (default site or "
+                        "the model's location), date, time, UTC offset, "
+                        "elevation and azimuth."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "list_lights",
         "description": "The render lights (index, kind, pos, dir, power, "
                        "kelvin, angle, on, name) and the ambience.",
@@ -339,8 +368,10 @@ TOOLS = [
             "from (it is applied to the view, as a click in Scenes does); "
             "without it, the current view. engine eevee|cycles, width/"
             "height px, quality 0 draft / 1 medium / 2 high. Uses the "
-            "render lights, the ambience and the sun of the Shadows panel; "
-            "hidden objects stay out."),
+            "render lights, the ambience and the sun of the Shadows panel "
+            "(a scene brings back the sun it remembers: see set_sun, "
+            "keep_sun); hidden objects stay out; glass lets the sun "
+            "through. The result reports the sun used and warnings."),
         "inputSchema": {"type": "object", "properties": {
             "path": _PATH,
             "scene": {"type": "string"},
@@ -349,6 +380,9 @@ TOOLS = [
             "height": {"type": "integer"},
             "quality": {"type": "integer", "enum": [0, 1, 2]},
             "ground": {"type": "boolean"},
+            "keep_sun": {"type": "boolean", "description":
+                         "With scene: keep the document's sun instead of "
+                         "the date and time the scene remembers."},
             "timeout_s": {"type": "integer", "description":
                           "Give up waiting after this (default 1800)."}},
             "required": ["path"]},
