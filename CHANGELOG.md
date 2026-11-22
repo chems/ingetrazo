@@ -60,6 +60,9 @@ Rien de ceci n'est publié sur le dépôt d'origine.
     (au lieu d'IfcBuildingElementProxy), avec leurs dimensions
     (Width, Depth, Height, GrossVolume) et un métré à l'unité (`und`) ;
     elles apparaissent aussi dans la liste de classes du panneau BIM.
+  - corrigé à la réception Windows : avec `size_cm`, un modèle sans
+    dimensions (modèles fournis) ne passe plus devant ceux dont la taille
+    se compare ; la ligne de licence n'est plus rognée en bas de la case.
 
 ### Corrigé
 

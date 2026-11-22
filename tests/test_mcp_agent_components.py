@@ -380,7 +380,7 @@ def test_search_preview_draws_a_numbered_contact_sheet(win, bridge,
     assert first["id"] == "cama-doble" and Path(first["thumbnail"]).is_file()
     assert second["thumbnail"] is None and res["without_picture"] == [2]
     img = QImage(str(out))
-    assert (img.width(), img.height()) == (2 * 210, 250)
+    assert (img.width(), img.height()) == (2 * 210, 266)
     # The first cell shows the model's picture, the second says it has none.
     c = img.pixelColor(105, 120)
     assert (c.red(), c.green(), c.blue()) == (200, 40, 40)
@@ -427,3 +427,38 @@ def test_client_returns_the_sheet_as_an_image(monkeypatch, tmp_path):
     assert '"n": 1' in res["content"][0]["text"]
     spec = next(t for t in client.TOOLS if t["name"] == "search_components")
     assert {"preview", "sheet_path"} <= set(spec["inputSchema"]["properties"])
+
+
+def test_size_ranking_puts_models_without_a_size_last(win, bridge,
+                                                      library_on_disk):
+    """Found on Windows: the bundled «Sofa» (no size) came first for
+    size_cm [200, 90] — a distance of nothing beat every real model."""
+    from core.agent_tools import search_components
+    entries = [
+        {"id": "bundled:sofa", "name": "Sofa", "name_en": "Sofa",
+         "category": "Starter", "size_cm": []},
+        {"id": "a", "name": "Sofá", "name_en": "Sofa", "category": "Salón",
+         "size_cm": [230.0, 95.0, 80.0]},
+        {"id": "b", "name": "Sofá", "name_en": "Sofa", "category": "Salón",
+         "size_cm": [199.0, 84.0, 80.0]},
+    ]
+    res = search_components("sofa", size_cm=[200, 90, None], _entries=entries)
+    assert [r["id"] for r in res["results"]] == ["b", "a", "bundled:sofa"]
+    res = search_components("sofa", size_cm=[None, None, None],
+                            _entries=entries)
+    assert res["results"][0]["id"] == "bundled:sofa"     # no size asked
+
+
+def test_sheet_card_fits_all_four_lines(tmp_path):
+    from PySide6.QtGui import QImage
+    from core.agent_tools import contact_sheet
+    r = {"n": 1, "id": "x", "name": "Sofá", "name_en": "Couch",
+         "size_cm": [201, 91, 84], "licence": "Creative Commons Attribution",
+         "source": "library"}
+    out = contact_sheet([r], {}, tmp_path / "s.png")
+    img = QImage(str(out))
+    # The border of the card is drawn below the last text line: the 4th
+    # line (licence) ends above it, with white between them.
+    bottom = img.height() - 4
+    row = [img.pixelColor(x, bottom - 2) for x in range(20, 190)]
+    assert all(c.red() == 255 for c in row)

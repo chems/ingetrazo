@@ -832,8 +832,12 @@ def _library_entries() -> list:
 
 
 def _size_distance(have: list, want) -> float:
-    if not want or not have:
+    if not want or all(w is None for w in want):
         return 0.0
+    if not have:
+        # No size known (the bundled starters): after every model whose
+        # size can be compared, not first with a distance of nothing.
+        return float("inf")
     d = 0.0
     for h, w in zip(have, list(want) + [None] * 3):
         if w is not None:
@@ -954,7 +958,7 @@ def contact_sheet(results, pics: dict, path) -> Path:
 
     cols = min(4, max(1, len(results)))
     rows = (len(results) + cols - 1) // cols
-    cw, ch, pad = 210, 250, 10
+    cw, ch, pad = 210, 266, 10           # room for 4 lines under the picture
     img = QImage(cols * cw, rows * ch, QImage.Format_RGB32)
     img.fill(QColor(255, 255, 255))
     p = QPainter(img)
