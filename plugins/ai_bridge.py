@@ -358,7 +358,11 @@ class _Bridge(QObject):
             raise ValueError("open takes an .igz document")
         if not p.is_file():
             raise FileNotFoundError(f"no such file: {p}")
-        pending = autosave.pending(p) is not None
+        # A document already open in a tab is only brought to the front:
+        # its own session's recovery slot is no copy to choose (seen in the
+        # acceptance run, 22-11-2026, right after a save).
+        already = any(d.same_file(p) for d in getattr(win, "_documents", ()))
+        pending = not already and autosave.pending(p) is not None
         if pending and recover is None:
             raise RuntimeError(
                 "an auto-saved copy of this document exists (a session ended "

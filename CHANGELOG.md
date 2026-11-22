@@ -53,6 +53,9 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   tronquée (`groups_total`, `group_names_truncated`,
   `group_names_next_offset` ; paramètres `offset`/`limit`).
 - `undo`/`redo` du pont préviennent les panneaux (Rendu, Scènes…).
+- `open` ne signale plus de copie auto-enregistrée pour un document déjà
+  ouvert dans un onglet (constaté à l'essai de réception du 22-11-2026,
+  juste après un `save`).
 
 ### Documentation
 

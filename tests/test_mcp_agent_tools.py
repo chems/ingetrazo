@@ -174,8 +174,11 @@ def test_open_refuses_a_dxf_and_a_missing_file(win, bridge, tmp_path):
 def test_open_asks_before_dropping_an_autosaved_copy(win, bridge, tmp_path,
                                                      monkeypatch):
     _box_group(win.viewport.scene, "Mur")
-    path = Path(_ok(_ask(bridge, "save",
-                         {"path": str(tmp_path / "a.igz")}))["path"])
+    saved = Path(_ok(_ask(bridge, "save",
+                          {"path": str(tmp_path / "a.igz")}))["path"])
+    import shutil
+    path = tmp_path / "copie.igz"          # a document NOT open in a tab
+    shutil.copy(saved, path)
     from core import autosave
     win._new_document()
     real = autosave.pending
@@ -185,6 +188,19 @@ def test_open_asks_before_dropping_an_autosaved_copy(win, bridge, tmp_path,
     assert not r["ok"] and "recover" in r["error"]
     res = _ok(_ask(bridge, "open", {"path": str(path), "recover": False}))
     assert res["recovered"] is False
+
+
+def test_open_does_not_ask_about_the_slot_of_a_document_already_open(
+        win, bridge, tmp_path, monkeypatch):
+    _box_group(win.viewport.scene, "Mur")
+    path = Path(_ok(_ask(bridge, "save",
+                         {"path": str(tmp_path / "ouvert.igz")}))["path"])
+    from core import autosave
+    real = autosave.pending
+    monkeypatch.setattr(autosave, "pending",
+                        lambda p, **kw: path if p == path else real(p, **kw))
+    res = _ok(_ask(bridge, "open", {"path": str(path)}))
+    assert res["document"] == str(path) and res["recovered"] is False
 
 
 def test_export_ifc_and_quantities_csv(win, bridge, tmp_path):
