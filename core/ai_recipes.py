@@ -143,7 +143,9 @@ query_model(offset, limit) -> counts incl. groups, paged names, \
 search_components(query, category, size_cm, preview, sheet_path) + insert_component(id, \
 position, rotation) -> real-size library models (names in Spanish/English: \
 Cama/Bed, Silla/Chair, Lampara/Lamp, Radiador/Radiator…), import_model(path, \
-position, rotation, units) -> GLB/OBJ/DAE/SKP/STL/IGZ as one component.
+position, rotation, units) -> GLB/OBJ/DAE/SKP/STL/IGZ as one component; a GLB \
+brings its material names and finishes (metallic -> metal, transmission or \
+see-through -> glass, roughness -> gloss/satin/matte) into the document.
 - Quality: replace placeholder boxes by library models; textures at real \
 tile size (sw/sh m); name materials and set their finish with paint \
 ({"name": "Vidrio", "finish": "glass"}) — the render guesses finishes from \

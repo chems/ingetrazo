@@ -135,7 +135,8 @@ def register(materials: dict, mat: Material) -> str:
         name = f"{base} ({n})"
         n += 1
     if name != mat.name:
-        mat = Material(name, mat.color, mat.texture, mat.opacity)
+        mat = Material(name, mat.color, mat.texture, mat.opacity,
+                       getattr(mat, "finish", None))
     materials[name] = mat
     return name
 

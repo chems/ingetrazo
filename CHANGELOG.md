@@ -63,9 +63,21 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   - corrigé à la réception Windows : avec `size_cm`, un modèle sans
     dimensions (modèles fournis) ne passe plus devant ceux dont la taille
     se compare ; la ligne de licence n'est plus rognée en bas de la case.
+- **Matières des GLB** (`formats/glb.py`) : un GLB importé (fichier ou
+  `import_model`) garde le nom de ses matériaux sur les faces et les inscrit
+  dans le registre du document, avec la finition de rendu déduite de leurs
+  paramètres physiques : `extras.ingetrazo_finish` d'abord, puis
+  transmission ou transparence → verre, `metallicFactor` ≥ 0,5 → métal,
+  rugosité ≤ 0,25 → brillant, ≤ 0,6 → satiné, sinon mat (défauts glTF
+  respectés). Les objets créés dans Blender gardent donc métal et verre au
+  rendu Blender d'IngeTrazo. Un nom déjà pris par une autre recette devient
+  « nom (2) » ; l'annulation d'un import (`SnapshotImport`) retire aussi les
+  matériaux qu'il a ajoutés.
 
 ### Corrigé
 
+- **Registre des matériaux** : `core.materials.register` gardait la
+  finition d'un matériau renommé « nom (2) » ; elle était perdue.
 - **Encodage** : le client MCP lit et écrit en UTF-8 quel que soit le code de
   page de la console. Sous Windows, `ingetrazo-mcp.exe` décodait l'entrée en
   cp1252 et « allège » devenait « allÃ¨ge » dans les noms stockés.
@@ -123,6 +135,11 @@ Rien de ceci n'est publié sur le dépôt d'origine.
   lot 3 : planche numérotée (vignettes de la bibliothèque et des modèles
   fournis, case « no preview », dossier absent refusé, image jointe par le
   client).
+- `tests/test_mcp_agent_glb_materials.py` : noms et finitions des GLB
+  (paramètres physiques, extras d'IngeTrazo), nom déjà pris, import par
+  `import_model` et par le menu Fichier avec annulation et rétablissement,
+  import raté sans reste, finitions jusque dans le GLB du rendu Blender,
+  lecteurs à trois valeurs intacts (échouent tous sans le correctif).
 - `tests/test_ifc_validation.py` : les classes d'équipement passent la
   validation IFC4 d'ifcopenshell, sous leur propre classe, dans le niveau,
   avec leurs quantités.

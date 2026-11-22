@@ -3686,7 +3686,11 @@ class SnapshotImport(Command):
 
     And what the mutation removed: an extension that replaces its own
     container group, or a console line that deletes one, lost that group
-    for good on undo, which only took the new one away."""
+    for good on undo, which only took the new one away.
+
+    And the materials an import registers (fork mcp-agent): a GLB now
+    brings its named materials into the document's registry; undoing the
+    import takes away the ones it added."""
 
     # Scene list -> (what the mutation added, what it removed). The removed
     # entries are (index before the mutation, item), so undo puts each one
@@ -3707,11 +3711,14 @@ class SnapshotImport(Command):
         for _, added, removed in self._TRACKED:
             setattr(self, added, [])
             setattr(self, removed, [])
+        #: name -> Material the mutation added to ``scene.materials``.
+        self.added_materials: dict = {}
 
     @property
     def changed(self) -> bool:
         """Whether the run did anything undo would have to revert."""
         return (self.before != self.after
+                or bool(self.added_materials)
                 or any(getattr(self, added) or getattr(self, removed)
                        for _, added, removed in self._TRACKED))
 
@@ -3720,10 +3727,15 @@ class SnapshotImport(Command):
         if self.after is None:
             lists_before = {name: list(getattr(scene, name))
                             for name, _, _ in self._TRACKED}
+            registry = getattr(scene, "materials", None)
+            mats_before = dict(registry) if isinstance(registry, dict) else {}
             self.before = m.capture_state()
             try:
                 self.mutate(scene)
             except BaseException:
+                if isinstance(registry, dict):
+                    for k in [k for k in registry if k not in mats_before]:
+                        del registry[k]
                 # Restore membership and order, not only newly appended items:
                 # failed recipes may also remove or reorder existing objects.
                 # Slice assignment preserves references held by scripting scopes.
@@ -3731,6 +3743,9 @@ class SnapshotImport(Command):
                     getattr(scene, name)[:] = items
                 raise
             self.after = m.capture_state()
+            if isinstance(registry, dict):
+                self.added_materials = {k: v for k, v in registry.items()
+                                        if k not in mats_before}
             for name, added, removed in self._TRACKED:
                 before, now = lists_before[name], getattr(scene, name)
                 setattr(self, added, [x for x in now if x not in before])
@@ -3748,11 +3763,20 @@ class SnapshotImport(Command):
                 for x in getattr(self, added):
                     if x not in items:
                         items.append(x)
+            registry = getattr(scene, "materials", None)
+            if isinstance(registry, dict):
+                for k, v in self.added_materials.items():
+                    registry.setdefault(k, v)
         scene.version += 1
 
     def undo(self, scene) -> None:
         if self.before is not None:
             scene.mesh.restore_state(self.before)
+        registry = getattr(scene, "materials", None)
+        if isinstance(registry, dict):
+            for k, v in self.added_materials.items():
+                if registry.get(k) is v:
+                    del registry[k]
         for name, added, removed in self._TRACKED:
             items = getattr(scene, name)
             for x in getattr(self, added):

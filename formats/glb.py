@@ -199,12 +199,58 @@ def _extract_images(js, buffers, path: Path):
     return paths
 
 
+class _Recipe(tuple):
+    """(texture path | None, rgba | None, opacity | None) — the 3-tuple the
+    readers unpack — carrying the glTF material's ``name`` and render
+    ``finish`` as attributes (fork mcp-agent), so callers that only unpack
+    three values keep working."""
+
+    def __new__(cls, tex_path, rgba, opacity, name=None, finish=None):
+        self = super().__new__(cls, (tex_path, rgba, opacity))
+        self.name = name
+        self.finish = finish
+        return self
+
+
+def _pbr_finish(mat: dict, opacity) -> str | None:
+    """The render finish (core.finish.FINISHES) a glTF material describes:
+    IngeTrazo's own ``extras.ingetrazo_finish`` first, then its physical
+    parameters — transmission or a see-through blend is glass, metallic is
+    metal, and the roughness grades gloss, satin and matte. glTF's own
+    defaults apply: metallicFactor and roughnessFactor are 1 when absent."""
+    from core.finish import FINISHES
+    own = (mat.get("extras") or {}).get("ingetrazo_finish")
+    if own in FINISHES:
+        return own
+    ext = mat.get("extensions") or {}
+    trans = (ext.get("KHR_materials_transmission") or {}).get(
+        "transmissionFactor", 0.0)
+    if (trans or 0) >= 0.3 or (opacity is not None and opacity < 0.6):
+        return "glass"
+    if "KHR_materials_pbrSpecularGlossiness" in ext:
+        gloss = ext["KHR_materials_pbrSpecularGlossiness"].get(
+            "glossinessFactor", 1.0)
+        rough = 1.0 - float(gloss)
+        metallic = 0.0
+    else:
+        pbr = mat.get("pbrMetallicRoughness") or {}
+        metallic = float(pbr.get("metallicFactor", 1.0))
+        rough = float(pbr.get("roughnessFactor", 1.0))
+    if metallic >= 0.5:
+        return "metal"
+    if rough <= 0.25:
+        return "gloss"
+    if rough <= 0.6 + 1e-6:     # varnished or oiled wood, satin paint
+        return "satin"
+    return "matte"
+
+
 def _material_recipe(js, mat_idx, image_paths):
     """(texture path | None, uv transform (ox, oy, sx, sy), rgba) for a
     material index, honouring the specular-glossiness legacy."""
     mats = js.get("materials", [])
     if mat_idx is None or mat_idx >= len(mats):
-        return None, (0.0, 0.0, 1.0, 1.0), None, 0, None
+        return None, (0.0, 0.0, 1.0, 1.0), None, 0, None, None, None
     mat = mats[mat_idx]
     sg = (mat.get("extensions", {})
           .get("KHR_materials_pbrSpecularGlossiness"))
@@ -236,7 +282,9 @@ def _material_recipe(js, mat_idx, image_paths):
             opacity = float(a)
         elif tex_path is None:
             opacity = 0.999   # blend-flagged plain material: keep a hint
-    return tex_path, uvt, rgba, uv_set, opacity
+    name = (mat.get("name") or "").strip()[:60] or None
+    finish = _pbr_finish(mat, opacity) if name else None
+    return tex_path, uvt, rgba, uv_set, opacity, name, finish
 
 
 def read_triangles(path: Path):
@@ -274,8 +322,8 @@ def read_triangles(path: Path):
             else:
                 idx = np.arange(len(pos), dtype=np.int64)
             idx = idx.astype(np.int64)[:(len(idx) // 3) * 3].reshape(-1, 3)
-            tex_path, uvt, rgba, uv_set, opacity = _material_recipe(
-                js, prim.get("material"), image_paths)
+            tex_path, uvt, rgba, uv_set, opacity, mat_name, finish = \
+                _material_recipe(js, prim.get("material"), image_paths)
             world_pts = pos @ world[:3, :3].T + world[:3, 3]
             world_pts = world_pts @ zup.T
             tris = world_pts[idx]                      # (N, 3, 3)
@@ -288,7 +336,8 @@ def read_triangles(path: Path):
                 uvs = uv[idx]                          # (N, 3, 2)
             elif tex_path is not None:
                 tex_path = None                        # texture without UVs
-            batches.append((tris, uvs, (tex_path, rgba, opacity)))
+            batches.append((tris, uvs, _Recipe(tex_path, rgba, opacity,
+                                               mat_name, finish)))
     return batches, js
 
 
@@ -337,7 +386,9 @@ def build_mesh(batches, progress=None):
     attrs_list = []
     total = sum(len(t) for t, _u, _r in batches) or 1
     done = 0
-    for tris, uvs, (tex_path, rgba, opacity) in batches:
+    for tris, uvs, recipe in batches:
+        tex_path, rgba, opacity = recipe
+        mat_name = getattr(recipe, "name", None)
         flat_parts.append(tris.reshape(-1, 3))
         base = None
         if tex_path is None:
@@ -349,6 +400,11 @@ def build_mesh(batches, progress=None):
                 base["back"] = True
             if opacity is not None:
                 base["opacity"] = opacity
+            if mat_name:
+                # The file's material, by name: the Materials panel, paint
+                # and the render's finish all find it (fork mcp-agent).
+                base["mat"] = mat_name
+                base["back"] = True
             attrs_list.extend([dict(base) if base else None] * len(tris))
         else:
             # glTF counts V from the top of the image; the viewport, like
@@ -366,6 +422,8 @@ def build_mesh(batches, progress=None):
                     if okm[i] else None
                 if a is not None and opacity is not None:
                     a["opacity"] = opacity
+                if a is not None and mat_name:
+                    a["mat"] = mat_name
                 attrs_list.append(a)
         done += len(tris)
         if progress is not None:
@@ -456,6 +514,37 @@ def _guess_scale(batches) -> float:
     return 1.0
 
 
+def _register_materials(scene, batches) -> dict:
+    """Put the file's named materials in the document's registry (name,
+    colour or picture, opacity, finish), so they show in the Materials
+    panel and the Blender render treats metal and glass as such. A name
+    already used by another recipe registers as « name (2) » and the faces
+    follow. Returns {file name: final name}."""
+    from core.materials import Material, register
+    registry = getattr(scene, "materials", None)
+    if not isinstance(registry, dict):
+        return {}
+    final: dict = {}
+    for _tris, _uvs, recipe in batches:
+        name = getattr(recipe, "name", None)
+        if not name:
+            continue
+        tex_path, rgba, opacity = recipe
+        if name in final:
+            recipe.name = final[name]
+            continue
+        color = None
+        if tex_path is None and rgba:
+            color = tuple(round(float(c), 4) for c in rgba[:3])
+        texture = ({"path": tex_path, "sw": 1.0, "sh": 1.0}
+                   if tex_path else None)
+        got = register(registry, Material(name, color, texture, opacity,
+                                          getattr(recipe, "finish", None)))
+        final[name] = got
+        recipe.name = got
+    return final
+
+
 def _load_glb_inner(scene, path, progress=None):
     from core.group import Group
     from formats.recenter import Bounds
@@ -482,6 +571,7 @@ def _load_glb_inner(scene, path, progress=None):
     offset = box.offset()
     if offset:
         batches = [(tris - offset, uvs, r) for tris, uvs, r in batches]
+    _register_materials(scene, batches)
     mesh = build_mesh(batches, progress=progress)
     title = (js.get("asset", {}).get("extras", {}) or {}).get("title")
     name = (title or Path(path).stem)[:60]
