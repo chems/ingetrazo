@@ -4,6 +4,77 @@ All notable changes to IngeTrazo are documented here.
 Format inspired by [Keep a Changelog](https://keepachangelog.com); versions
 follow [SemVer](https://semver.org).
 
+## [fork mcp-agent] — 2026-11-22 (chems/ingetrazo, branche `mcp-agent`, sur 0.6.2.1)
+
+Fork de travail de IngeTrazo (GPL-3.0, auteurs inchangés : voir AUTHORS)
+pour piloter IngeTrazo par MCP depuis le plugin Claude « atelier-architecture ».
+Rien de ceci n'est publié sur le dépôt d'origine.
+
+### Ajouté
+
+- **Nouveaux outils MCP** (pont IA `plugins/ai_bridge.py` + client
+  `scripts/ingetrazo_mcp.py`, logique dans `core/agent_tools.py`) :
+  `save(path)` en .igz (comme Enregistrer sous : .bak, document propre),
+  `open(path)` (.igz ; une copie auto-enregistrée n'est jamais jetée sans
+  `recover` explicite), `export_ifc(path)`, `quantities_csv(path)` (UTF-8),
+  `import_dxf(path, units, create_faces, name)` (une seule étape d'annulation,
+  sans dialogue ; renvoie les groupes créés, l'unité et l'emprise),
+  `render(path, scene, engine, width, height, quality)` qui lance Blender en
+  arrière-plan et attend l'image (le client interroge le pont, l'interface
+  n'est jamais bloquée).
+- **`paint(target, material, faces)`** : groupe entier (matière du
+  conteneur) ou faces (`"all"`, indices, ou `{"normal": …}`), couleur,
+  texture `{path, sw, sh, rot}`, texture de la bibliothèque fournie
+  (`{"library": "brick_red"}`), opacité, matière nommée. Une étape
+  d'annulation, affichage rafraîchi tout de suite, `changed` exact (faux si
+  rien ne change).
+- **`add_light`, `list_lights`, `remove_light`** : lumières ponctuelles et
+  spots du rendu Blender, stockées comme le fait le panneau Rendu (visibles
+  dedans, enregistrées dans le document, annulables).
+
+### Corrigé
+
+- **Encodage** : le client MCP lit et écrit en UTF-8 quel que soit le code de
+  page de la console. Sous Windows, `ingetrazo-mcp.exe` décodait l'entrée en
+  cp1252 et « allège » devenait « allÃ¨ge » dans les noms stockés.
+- **`run_python` voit tout le modèle** (`core.ai.AgentStep`) : modifier les
+  faces d'un groupe, `g.hidden`, `g.name`, `g.material`, `g.xform` ou les
+  données d'une extension donne maintenant `changed: True`, une étape
+  d'annulation qui les restaure, et l'affichage est rafraîchi (une texture
+  posée par script n'apparaissait qu'après un faux déplacement de sommet).
+  Un script qui échoue n'y laisse plus ses modifications de groupes à moitié
+  faites.
+- **Captures** : un groupe `hidden=True` n'apparaît plus dans `screenshot`
+  ni dans `render`, personnage d'échelle « Ingénieur » compris (le mémo des
+  placements du viewport restait périmé quand rien n'avait fait monter la
+  version du modèle).
+- **`query_model`** compte les faces et arêtes des groupes (`faces_total`,
+  `faces_in_groups`, `faces_placed`…) et dit quand la liste des groupes est
+  tronquée (`groups_total`, `group_names_truncated`,
+  `group_names_next_offset` ; paramètres `offset`/`limit`).
+- `undo`/`redo` du pont préviennent les panneaux (Rendu, Scènes…).
+
+### Documentation
+
+- Description de `run_python` complétée (`core.ai_recipes.MCP_NOTES`, lue
+  seulement par le serveur MCP) : `f.normal()`/`f.centroid()` sont des
+  méthodes, `camera.place(eye, target)`, `camera.perspective`, `fov_deg`,
+  `render_image`, format des textures et bibliothèque, `bim.tag_group`,
+  `bim.quantities_csv`, `model.show_axes`, et les nouveaux outils.
+
+### Compilation
+
+- `build-windows.yml` se lance aussi sur les pushs de la branche
+  `mcp-agent` et publie l'artefact `ingetrazo-windows` (zip portable +
+  installeur), sans signature ni release.
+
+### Tests
+
+- `tests/test_mcp_agent_tools.py` : un ou plusieurs tests par point
+  (fichiers, rendu avec un faux Blender, DXF, peinture, lumières, UTF-8,
+  personnage caché — test GL, ignoré sans contexte OpenGL —, query_model,
+  description).
+
 ## [0.6.2.1] — 2026-11-14
 
 **Mejoramos las láminas y el acotar: las cotas de lámina enganchan a lo

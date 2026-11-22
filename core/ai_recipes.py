@@ -105,6 +105,43 @@ UNITS = ("IngeTrazo es un modelador 3D libre de empujar/tirar: Z arriba, "
          "unidades en METROS, ángulos en RADIANES.")
 
 
+#: What the MCP door adds (fork chems/ingetrazo, branch mcp-agent): the
+#: API facts agents kept getting wrong (22-11-2026), and which dedicated
+#: tool to use instead of run_python. Only the MCP server reads this — the
+#: in-app assistant's prompt stays as short as small local models need.
+MCP_NOTES = """API notes (MCP):
+- Faces: f.normal() and f.centroid() are METHODS (QVector3D), f.area() too; \
+f.vertices (list of QVector3D), f.attrs (dict). Loose geometry is mesh; a \
+group's own is g.mesh (g.mesh.faces). Components: g.xform (QMatrix4x4) is \
+not None and the mesh is shared by every copy.
+- Paint: use the paint tool (undo, display refresh and an exact 'changed'). \
+In run_python a face colour is f.attrs["color"] = (r, g, b) 0..1; a texture \
+f.attrs["texture"] = {"path": abs_path, "sw": tile_w_m, "sh": tile_h_m, \
+"rot": degrees}; a whole group g.material = {"color": (r,g,b)} or \
+{"texture": {...}}. Shipped texture library: from core.agent_tools import \
+texture_library; texture_library() -> [{name, category, path, sw, sh}] \
+(names like brick_red, concrete_smooth, stone_ashlar…).
+- Hide / show: g.hidden = True (undoable, and pictures leave it out — the \
+scale figure «Ingeniero»/«Engineer» included).
+- Camera: cam = viewport.camera; cam.place(QVector3D(eye), \
+QVector3D(target)) puts the eye exactly there; cam.perspective (bool); \
+cam.fov_deg (vertical field of view, degrees); viewport.update().
+- Picture from code: img = viewport.render_image(width_px, height_px) \
+(QImage; img.save(path)); prefer the screenshot tool to look.
+- BIM: bim.tag_group(g, "IfcWall", "Mur Sud") (IfcSlab, IfcRoof, IfcDoor, \
+IfcWindow, IfcColumn, IfcBeam, IfcStair, IfcCovering…), bim.untag_group(g); \
+bim.quantities_csv(scene) -> CSV text. Files: quantities_csv / export_ifc \
+tools.
+- Axes: model.show_axes = False / True, then viewport.update().
+- Names are Unicode: write accents as they are («Allège», «Séjour»).
+Dedicated tools (prefer them to run_python): save(path .igz), open(path), \
+import_dxf(path, units, create_faces) -> groups created, export_ifc(path), \
+quantities_csv(path), paint(target, material, faces), add_light / \
+list_lights / remove_light (Blender render lights, Render panel), \
+render(path, scene, engine, width, height, quality) -> waits for the PNG, \
+query_model(offset, limit) -> counts incl. groups, paged names."""
+
+
 def reference(unit: str = "llamada") -> str:
     """Everything, in reading order — what a door hands the model."""
     return "\n".join((UNITS, SCOPE, RECIPES, HOW_IT_RUNS.format(unit=unit)))

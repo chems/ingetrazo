@@ -246,46 +246,223 @@ class _Bridge(QObject):
         from core.ai import run_transactional
         return run_transactional(self._viewport, code, self._scope)
 
-    def _tool_query_model(self) -> dict:
+    def _tool_query_model(self, offset: int = 0, limit: int = 100) -> dict:
+        """Counts include the faces and edges INSIDE groups (the loose mesh
+        alone read 0 on a model built of groups); long lists come in pages
+        that say they are cut (``*_total``, ``*_next_offset``)."""
+        from core.agent_tools import model_counts, page, render_state
         vp = self._viewport
         scene = vp.scene
         lo, hi = scene.bounds()
         insts = sum(1 for g in scene.groups
                     if getattr(g, "xform", None) is not None)
-        return {
-            "faces": len(scene.mesh.faces),
-            "edges": len(scene.mesh.edges),
+        counts = model_counts(scene)
+        groups = page([g.name for g in scene.groups], offset, limit)
+        mats = page(sorted(getattr(scene, "materials", {}) or {}), 0, limit)
+        doc = getattr(getattr(vp.window(), "_doc", None), "path", None)
+        out = {
+            # «faces»/«edges» keep their old meaning (the loose mesh) for
+            # callers that read them; the totals say what the model holds.
+            "faces": counts["faces_loose"],
+            "edges": counts["edges_loose"],
+            **counts,
             "groups": len(scene.groups) - insts,
             "component_instances": insts,
-            "group_names": [g.name for g in scene.groups][:100],
-            "materials": sorted(getattr(scene, "materials", {}) or {})[:100],
+            "groups_total": groups["total"],
+            "group_names": groups["items"],
+            "group_names_offset": groups["offset"],
+            "group_names_truncated": groups["truncated"],
+            "group_names_next_offset": groups["next_offset"],
+            "materials": mats["items"],
+            "materials_total": mats["total"],
+            "materials_truncated": mats["truncated"],
             "layers": [ly.name for ly in scene.layers],
+            "scenes": [v.name for v in getattr(scene, "saved_views", []) or []],
+            "render_lights": len(render_state(scene)["lights"]),
             "dimensions": len(getattr(scene, "dimensions", []) or []),
             "section_planes": len(getattr(scene, "section_planes", []) or []),
             "selection": len(scene.selection),
+            "document": None if doc is None else str(doc),
             "bounds": (None if lo is None else
                        {"min": [lo.x(), lo.y(), lo.z()],
                         "max": [hi.x(), hi.y(), hi.z()]}),
         }
+        return out
 
     def _tool_screenshot(self, width: int = 1024, height: int = 768) -> dict:
+        from core.agent_tools import fresh_view
         width = max(64, min(int(width), 4096))
         height = max(64, min(int(height), 4096))
-        image = self._viewport.render_image(width, height)
+        vp = self._viewport
+        fresh_view(vp)
+        image = vp.render_image(width, height)
+        if image is None:
+            raise RuntimeError("the viewport has no OpenGL context yet "
+                               "(window minimised or not shown)")
         out_dir = Path(tempfile.gettempdir()) / "ingetrazo-ai"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / "viewport.png"
         image.save(str(out))
         return {"path": str(out), "width": width, "height": height}
 
+    # ---- Files (no dialog: the bridge has nobody to answer one) ------------
+    def _window(self):
+        win = self._viewport.window()
+        if not hasattr(win, "open_path"):
+            raise RuntimeError("no IngeTrazo main window around the viewport")
+        return win
+
+    def _tool_save(self, path: str) -> dict:
+        """Save the project in front as .igz at ``path`` — what File ▸ Save
+        As does after its dialog: camera and views stored, a .bak of the
+        previous file kept, the tab renamed, the document clean."""
+        import shutil
+        from core import autosave
+        from core.agent_tools import check_out_path
+        from formats import igz as igz_format
+        win = self._window()
+        p = check_out_path(path, ".igz")
+        win._end_group_edits()
+        doc = win._doc
+        vp = doc.viewport
+        if p.is_file():
+            try:
+                shutil.copy2(p, p.with_name(p.name + ".bak"))
+            except OSError:
+                pass
+        vp.scene.camera_home = win._camera_dict(vp)
+        vp.scene.views_home = win._views_dict(doc)
+        stats = igz_format.save_scene(vp.scene, p) or {}
+        autosave.clear(p)
+        autosave.clear(doc.path, untitled=doc.untitled_no)
+        doc.path = p
+        win._remember_recent(p)
+        win._saved_version = vp.scene.version
+        win._update_title()
+        return {"path": str(p), "bytes": p.stat().st_size,
+                "textures_embedded": int(stats.get("embedded", 0)),
+                "textures_missing": int(stats.get("missing", 0))}
+
+    def _tool_open(self, path: str, recover=None) -> dict:
+        """Open an .igz in its own tab (or in the untouched one in front).
+        A DXF goes through ``import_dxf``. An auto-saved copy waiting for
+        this file is never thrown away silently: say ``recover`` true or
+        false."""
+        from core import autosave
+        win = self._window()
+        p = Path(os.path.expanduser(str(path)))
+        if p.suffix.lower() in (".dxf", ".dwg"):
+            raise ValueError("use import_dxf for a DXF (open asks for units "
+                             "in a dialog)")
+        if p.suffix.lower() != ".igz":
+            raise ValueError("open takes an .igz document")
+        if not p.is_file():
+            raise FileNotFoundError(f"no such file: {p}")
+        pending = autosave.pending(p) is not None
+        if pending and recover is None:
+            raise RuntimeError(
+                "an auto-saved copy of this document exists (a session ended "
+                "without saving it). Call open again with recover=true to "
+                "take the auto-saved copy, or recover=false to open the file "
+                "on disk and discard the copy.")
+        import views.main_window as mw
+        real = mw.QMessageBox.question
+        answer = mw.QMessageBox.Yes if recover else mw.QMessageBox.No
+        mw.QMessageBox.question = staticmethod(lambda *a, **k: answer)
+        try:
+            ok = win.open_path(p)
+        finally:
+            mw.QMessageBox.question = real
+        if not ok:
+            raise RuntimeError(f"IngeTrazo could not open {p}")
+        out = self._tool_query_model()
+        out["opened"] = str(p)
+        out["recovered"] = bool(pending and recover)
+        return out
+
+    def _tool_export_ifc(self, path: str,
+                         project_name: str = "IngeTrazo project") -> dict:
+        from core.agent_tools import export_ifc
+        self._viewport.end_group_edit()
+        return export_ifc(self._viewport.scene, path, project_name)
+
+    def _tool_quantities_csv(self, path: str) -> dict:
+        from core.agent_tools import quantities_csv
+        self._viewport.end_group_edit()
+        return quantities_csv(self._viewport.scene, path)
+
+    def _tool_import_dxf(self, path: str, units: str = "auto",
+                         create_faces: bool = False, name=None) -> dict:
+        from core.agent_tools import import_dxf
+        vp = self._viewport
+        vp.end_group_edit()
+        out = import_dxf(vp, path, units=units, create_faces=create_faces,
+                         name=name)
+        try:
+            self._window()._on_zoom_extents()
+        except Exception:  # noqa: BLE001 — framing is a nicety
+            pass
+        return out
+
+    # ---- Paint and render lights -------------------------------------------
+    def _tool_paint(self, target=None, material=None, faces=None) -> dict:
+        from core.agent_tools import paint
+        return paint(self._viewport, target, material, faces)
+
+    def _tool_add_light(self, position, kind: str = "point", direction=None,
+                        target=None, power=None, kelvin=None, angle=None,
+                        name: str = "", on: bool = True,
+                        ambience=None) -> dict:
+        from core.agent_tools import add_light
+        return add_light(self._viewport, position, kind=kind,
+                         direction=direction, target=target, power=power,
+                         kelvin=kelvin, angle=angle, name=name, on=on,
+                         ambience=ambience)
+
+    def _tool_list_lights(self) -> dict:
+        from core.agent_tools import list_lights
+        return list_lights(self._viewport.scene)
+
+    def _tool_remove_light(self, index=None, name=None) -> dict:
+        from core.agent_tools import remove_light
+        return remove_light(self._viewport, index=index, name=name)
+
+    # ---- Blender render (started here, waited for by the MCP client) --------
+    def _renders(self):
+        jobs = getattr(self, "_render_jobs", None)
+        if jobs is None:
+            from core.agent_tools import RenderJobs
+            jobs = self._render_jobs = RenderJobs()
+        return jobs
+
+    def _tool_render_start(self, path: str, scene=None, engine="eevee",
+                           width=1600, height=900, quality=1, ground=True,
+                           blender=None) -> dict:
+        from core.agent_tools import fresh_view
+        vp = self._viewport
+        vp.end_group_edit()
+        fresh_view(vp)
+        return self._renders().start(vp, path, scene_name=scene,
+                                     engine=engine, width=width,
+                                     height=height, quality=quality,
+                                     ground=ground, blender=blender)
+
+    def _tool_render_status(self, job) -> dict:
+        return self._renders().status(job)
+
+    def _tool_render_cancel(self, job) -> dict:
+        return self._renders().cancel(job)
+
     def _tool_undo(self) -> dict:
         ok = self._viewport.history.undo()
-        self._viewport.update()
+        # notify, not only update: the panels that follow the document
+        # (Render lights, Scenes…) hear of it at once.
+        self._viewport.notify_scene_changed()
         return {"ok": bool(ok)}
 
     def _tool_redo(self) -> dict:
         ok = self._viewport.history.redo()
-        self._viewport.update()
+        self._viewport.notify_scene_changed()
         return {"ok": bool(ok)}
 
 

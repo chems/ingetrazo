@@ -7,6 +7,10 @@ on:
   push:
     tags:
       - 'v*'
+    # Fork chems/ingetrazo: every push of the MCP work builds the Windows
+    # bundle as a downloadable artifact (no release, no signing).
+    branches:
+      - mcp-agent
   workflow_dispatch:
     inputs:
       publicar:
@@ -88,6 +92,16 @@ jobs:
           maturin build --release -m rust/ingetrazo_core/Cargo.toml -o "$RUNNER_TEMP/wheels"
           pip install "$RUNNER_TEMP"/wheels/ingetrazo_core-*.whl
           INGETRAZO_RUST=1 python -c "import core._native as n; assert n.native is not None; print('motor:', n.engine())"
+
+      # Fork chems/ingetrazo: the MCP tools' own tests, on Windows — where
+      # the stdio encoding bug lived (a piped stdin read as cp1252).
+      - name: Tests MCP (fork mcp-agent)
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pip install pytest
+          python -m pytest -q -p no:cacheprovider tests/test_mcp_agent_tools.py tests/test_ai_bridge.py tests/test_mcp_client_host.py
 
       # DWG en Windows (#101): el dwg2dxf.exe OFICIAL de LibreDWG (su
       # release win64, mingw), con las dos DLL que carga — nada más del zip.

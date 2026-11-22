@@ -417,6 +417,116 @@ def _tidy_groups(scene) -> None:
         scene.groups[:] = tidy
 
 
+#: The group fields a recipe may set directly and the undo must restore.
+_GROUP_FIELDS = ("name", "hidden", "layer", "material", "locked", "ifc",
+                 "billboard")
+
+
+def _group_state(g) -> tuple:
+    """A comparable, restorable copy of a group's own fields."""
+    import copy
+    xf = getattr(g, "xform", None)
+    vals = tuple(copy.deepcopy(getattr(g, k, None)) for k in _GROUP_FIELDS)
+    kids = tuple(getattr(g, "children", None) or ())
+    return (vals, None if xf is None else tuple(xf.data()),
+            tuple(id(c) for c in kids), kids)
+
+
+class AgentStep(SnapshotImport):
+    """One ``run_python`` call as an undo step that sees the WHOLE model.
+
+    :class:`SnapshotImport` snapshots the loose mesh and the scene's lists.
+    A recipe that painted a face inside a group, hid the scale figure or
+    renamed a wall touched none of those: the bridge answered
+    ``changed: False``, Ctrl+Z skipped the step, and a failing recipe left
+    its half-done group edits in place. This also snapshots every group's
+    mesh and fields (``hidden``, ``name``, ``material``, ``xform``…) and the
+    extensions' document data, keeps what changed for undo/redo, and flags
+    the changed meshes so the display redraws their paint at once (a face
+    texture set by script used to show only after a vertex moved)."""
+
+    def __init__(self, mutate) -> None:
+        super().__init__(mutate)
+        self._meshes: list = []        # (mesh, before, after)
+        self._fields: list = []        # (group, before, after)
+        self._plugin: tuple | None = None
+
+    @staticmethod
+    def _apply_fields(g, state) -> None:
+        import copy
+        vals, xf, _ids, kids = state
+        for k, v in zip(_GROUP_FIELDS, vals):
+            if hasattr(g, k) or v is not None:
+                setattr(g, k, copy.deepcopy(v))
+        if xf is not None:
+            from PySide6.QtGui import QMatrix4x4
+            g.xform = QMatrix4x4(*xf).transposed()   # data() is column-major
+        else:
+            if getattr(g, "xform", None) is not None:
+                g.xform = None
+        if hasattr(g, "children") and g.children is not None:
+            g.children[:] = list(kids)
+
+    def do(self, scene) -> None:
+        if self.after is not None:                      # redo
+            super().do(scene)
+            for m, _b, a in self._meshes:
+                m.restore_state(a)
+            for g, _b, a in self._fields:
+                self._apply_fields(g, a)
+            if self._plugin is not None:
+                scene.plugin_data = json.loads(self._plugin[1])
+            return
+        from core.agent_tools import flag_paint, group_meshes, walk_groups
+        meshes = group_meshes(scene)
+        before_m = [(m, m.capture_state()) for m in meshes]
+        groups = list(walk_groups(scene.groups))
+        before_g = [(g, _group_state(g)) for g in groups]
+        plugin_before = json.dumps(getattr(scene, "plugin_data", {}) or {},
+                                   sort_keys=True, default=repr)
+        try:
+            loose_before = scene.mesh.capture_state()
+            super().do(scene)
+        except BaseException:
+            for m, b in before_m:
+                m.restore_state(b)
+            for g, b in before_g:
+                self._apply_fields(g, b)
+            scene.plugin_data = json.loads(plugin_before)
+            raise
+        for m, b in before_m:
+            a = m.capture_state()
+            if a != b:
+                self._meshes.append((m, b, a))
+                flag_paint(m)
+        if self.after is not None and self.after.get("fattrs") != \
+                loose_before.get("fattrs"):
+            flag_paint(scene.mesh)
+        for g, b in before_g:
+            a = _group_state(g)
+            if a != b:
+                self._fields.append((g, b, a))
+                flag_paint(getattr(g, "mesh", None))
+        plugin_after = json.dumps(getattr(scene, "plugin_data", {}) or {},
+                                  sort_keys=True, default=repr)
+        if plugin_after != plugin_before:
+            self._plugin = (plugin_before, plugin_after)
+
+    def undo(self, scene) -> None:
+        super().undo(scene)
+        for m, b, _a in self._meshes:
+            m.restore_state(b)
+        for g, b, _a in self._fields:
+            self._apply_fields(g, b)
+        if self._plugin is not None:
+            scene.plugin_data = json.loads(self._plugin[0])
+
+    @property
+    def changed(self) -> bool:
+        return (super().changed or bool(self._meshes) or bool(self._fields)
+                or self._plugin is not None)
+
+
 def run_transactional(viewport, code: str, scope: dict) -> dict:
     """Execute ``code`` exactly like the Python Console: one undoable step,
     rolled back whole on error, no undo entry if nothing changed. Returns
@@ -448,7 +558,7 @@ def run_transactional(viewport, code: str, scope: dict) -> dict:
         finally:
             sys.stdout, sys.stderr = old_out, old_err
 
-    cmd = SnapshotImport(mutate)
+    cmd = AgentStep(mutate)
     saved_redo = list(history.redo_stack)
     history.execute(cmd)
     error = history.last_error
